@@ -383,7 +383,7 @@ fn load_openclaw_runtime_token() -> Result<Option<GithubCopilotRuntimeToken>, Ap
         return Ok(None);
     };
     let path = home.join(OPENCLAW_RUNTIME_CACHE_RELATIVE_PATH);
-    read_json_file::<GithubCopilotRuntimeToken>(&path).map_err(ApiError::from)
+    read_optional_fallback_json_file::<GithubCopilotRuntimeToken>(&path)
 }
 
 fn load_openclaw_github_token() -> Result<Option<String>, ApiError> {
@@ -400,8 +400,7 @@ fn load_openclaw_github_token() -> Result<Option<String>, ApiError> {
     for entry in entries {
         let entry = entry.map_err(ApiError::from)?;
         let path = entry.path().join("agent").join("auth-profiles.json");
-        let Some(root) = read_json_file::<OpenClawAuthProfiles>(&path).map_err(ApiError::from)?
-        else {
+        let Some(root) = read_optional_fallback_json_file::<OpenClawAuthProfiles>(&path)? else {
             continue;
         };
         for profile in root.profiles.into_values() {
@@ -432,11 +431,27 @@ where
     }
 }
 
+fn read_optional_fallback_json_file<T>(path: &Path) -> Result<Option<T>, ApiError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    match read_json_file(path) {
+        Ok(value) => Ok(value),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => Ok(None),
+        Err(error) => Err(ApiError::from(error)),
+    }
+}
+
 fn read_first_non_empty_env(keys: &[&str]) -> Result<Option<String>, ApiError> {
     for key in keys {
         match std::env::var(key) {
-            Ok(value) if !value.trim().is_empty() => return Ok(Some(value)),
-            Ok(_) | Err(std::env::VarError::NotPresent) => {}
+            Ok(value) => {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return Ok(Some(trimmed.to_string()));
+                }
+            }
+            Err(std::env::VarError::NotPresent) => {}
             Err(error) => return Err(ApiError::from(error)),
         }
     }

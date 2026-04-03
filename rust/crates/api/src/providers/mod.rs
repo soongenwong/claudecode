@@ -221,6 +221,12 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
     if claw_provider::has_auth_from_env_or_saved().unwrap_or(false) {
         return ProviderKind::ClawApi;
     }
+    if openai_compat::has_api_key("OPENAI_API_KEY") {
+        return ProviderKind::OpenAi;
+    }
+    if openai_compat::has_api_key("XAI_API_KEY") {
+        return ProviderKind::Xai;
+    }
     if github_copilot::load_saved_github_token()
         .ok()
         .and_then(std::convert::identity)
@@ -231,12 +237,6 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
             .is_some()
     {
         return ProviderKind::GithubCopilot;
-    }
-    if openai_compat::has_api_key("OPENAI_API_KEY") {
-        return ProviderKind::OpenAi;
-    }
-    if openai_compat::has_api_key("XAI_API_KEY") {
-        return ProviderKind::Xai;
     }
     ProviderKind::ClawApi
 }

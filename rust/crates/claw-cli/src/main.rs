@@ -18,10 +18,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use api::{
     cached_model_availability_is_fresh, load_cached_model_availability, load_saved_github_token,
     poll_for_github_copilot_access_token, refresh_github_copilot_model_availability,
-    request_github_copilot_device_code, save_github_copilot_token, AuthSource, ClawApiClient,
-    ContentBlockDelta, GithubCopilotModelAvailability, InputContentBlock, InputMessage,
-    MessageRequest, MessageResponse, OutputContentBlock, ProviderClient,
-    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
+    request_github_copilot_device_code, resolve_startup_auth_source,
+    save_github_copilot_token, AuthSource, ClawApiClient, ContentBlockDelta,
+    GithubCopilotModelAvailability, InputContentBlock, InputMessage, MessageRequest,
+    MessageResponse, OutputContentBlock, ProviderClient, StreamEvent as ApiStreamEvent,
+    ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 
 use commands::{
@@ -48,11 +49,7 @@ use tools::GlobalToolRegistry;
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
 const DEFAULT_GITHUB_COPILOT_MODEL: &str = "github-copilot/gpt-5.4";
 fn max_tokens_for_model(model: &str) -> u32 {
-    if model.contains("opus") {
-        32_000
-    } else {
-        64_000
-    }
+    api::max_tokens_for_model(model)
 }
 const DEFAULT_DATE: &str = "2026-03-31";
 const DEFAULT_OAUTH_CALLBACK_PORT: u16 = 4545;
@@ -3268,7 +3265,10 @@ impl DefaultRuntimeClient {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
-            client: ProviderClient::from_model(&model)?,
+            client: ProviderClient::from_model_with_default_auth(
+                &model,
+                Some(resolve_cli_auth_source()?),
+            )?,
             model,
             enable_tools,
             emit_output,
@@ -3277,6 +3277,16 @@ impl DefaultRuntimeClient {
             progress_reporter,
         })
     }
+}
+
+fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
+    Ok(resolve_startup_auth_source(|| {
+        let cwd = env::current_dir().map_err(api::ApiError::from)?;
+        let config = ConfigLoader::default_for(&cwd).load().map_err(|error| {
+            api::ApiError::Auth(format!("failed to load runtime OAuth config: {error}"))
+        })?;
+        Ok(config.oauth().cloned())
+    })?)
 }
 
 impl ApiClient for DefaultRuntimeClient {
