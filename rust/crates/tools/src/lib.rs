@@ -3554,6 +3554,8 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-store");
         let config_home = temp_path("agent-config-home");
+        let previous_agent_store = std::env::var_os("CLAW_AGENT_STORE");
+        let previous_config_home = std::env::var_os("CLAW_CONFIG_HOME");
         std::env::set_var("CLAW_AGENT_STORE", &dir);
         std::env::set_var("CLAW_CONFIG_HOME", &config_home);
         let captured = Arc::new(Mutex::new(None::<AgentJob>));
@@ -3581,8 +3583,16 @@ mod tests {
             },
         )
         .expect("Agent should succeed");
-        std::env::remove_var("CLAW_AGENT_STORE");
-        std::env::remove_var("CLAW_CONFIG_HOME");
+        if let Some(previous) = previous_agent_store {
+            std::env::set_var("CLAW_AGENT_STORE", previous);
+        } else {
+            std::env::remove_var("CLAW_AGENT_STORE");
+        }
+        if let Some(previous) = previous_config_home {
+            std::env::set_var("CLAW_CONFIG_HOME", previous);
+        } else {
+            std::env::remove_var("CLAW_CONFIG_HOME");
+        }
 
         assert_eq!(manifest.name, "ship-audit");
         assert_eq!(manifest.subagent_type.as_deref(), Some("Explore"));

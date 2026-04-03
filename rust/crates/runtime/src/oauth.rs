@@ -381,7 +381,20 @@ fn write_credentials_root(path: &PathBuf, root: &Map<String, Value>) -> io::Resu
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let temp_path = path.with_extension("json.tmp");
     fs::write(&temp_path, format!("{rendered}\n"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600))?;
+    }
     fs::rename(temp_path, path)
+        .and_then(|()| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            }
+            Ok(())
+        })
 }
 
 fn base64url_encode(bytes: &[u8]) -> String {

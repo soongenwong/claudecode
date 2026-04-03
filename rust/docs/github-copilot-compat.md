@@ -53,8 +53,8 @@ mindmap
 
 Files involved:
 
-- [crates/api/src/providers/github_copilot.rs](/Users/cosmophonix/claudecoderust/theanomaly/rust/crates/api/src/providers/github_copilot.rs)
-- [crates/runtime/src/oauth.rs](/Users/cosmophonix/claudecoderust/theanomaly/rust/crates/runtime/src/oauth.rs)
+- [crates/api/src/providers/github_copilot.rs](../crates/api/src/providers/github_copilot.rs)
+- [crates/runtime/src/oauth.rs](../crates/runtime/src/oauth.rs)
 
 Implemented pieces:
 
@@ -75,9 +75,9 @@ Credential store keys introduced:
 
 Files involved:
 
-- [crates/api/src/providers/mod.rs](/Users/cosmophonix/claudecoderust/theanomaly/rust/crates/api/src/providers/mod.rs)
-- [crates/api/src/client.rs](/Users/cosmophonix/claudecoderust/theanomaly/rust/crates/api/src/client.rs)
-- [crates/api/src/providers/openai_compat.rs](/Users/cosmophonix/claudecoderust/theanomaly/rust/crates/api/src/providers/openai_compat.rs)
+- [crates/api/src/providers/mod.rs](../crates/api/src/providers/mod.rs)
+- [crates/api/src/client.rs](../crates/api/src/client.rs)
+- [crates/api/src/providers/openai_compat.rs](../crates/api/src/providers/openai_compat.rs)
 
 Implemented pieces:
 
@@ -92,7 +92,7 @@ Implemented pieces:
 
 Primary file:
 
-- [crates/claw-cli/src/main.rs](/Users/cosmophonix/claudecoderust/theanomaly/rust/crates/claw-cli/src/main.rs)
+- [crates/claw-cli/src/main.rs](../crates/claw-cli/src/main.rs)
 
 Implemented pieces:
 
@@ -112,7 +112,7 @@ Implemented pieces:
 
 Primary file:
 
-- [crates/tools/src/lib.rs](/Users/cosmophonix/claudecoderust/theanomaly/rust/crates/tools/src/lib.rs)
+- [crates/tools/src/lib.rs](../crates/tools/src/lib.rs)
 
 Implemented pieces:
 

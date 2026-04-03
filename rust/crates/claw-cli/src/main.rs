@@ -722,6 +722,7 @@ fn run_logout() -> Result<(), Box<dyn std::error::Error>> {
 fn run_logout_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
     api::clear_github_copilot_token()?;
     runtime::clear_credentials_entry("githubCopilotRuntime")?;
+    runtime::clear_credentials_entry("githubCopilotModelAvailability")?;
     clear_startup_default_model_if_matches("github-copilot/")?;
     println!("GitHub Copilot credentials cleared.");
     Ok(())
@@ -4383,10 +4384,15 @@ mod tests {
                 .expect("clock should move forward")
                 .as_nanos()
         ));
+        let previous = std::env::var_os("CLAW_CONFIG_HOME");
         fs::create_dir_all(&config_home).expect("temp config home should be created");
         std::env::set_var("CLAW_CONFIG_HOME", &config_home);
         let result = f();
-        std::env::remove_var("CLAW_CONFIG_HOME");
+        if let Some(previous) = previous {
+            std::env::set_var("CLAW_CONFIG_HOME", previous);
+        } else {
+            std::env::remove_var("CLAW_CONFIG_HOME");
+        }
         let _ = fs::remove_dir_all(config_home);
         result
     }
