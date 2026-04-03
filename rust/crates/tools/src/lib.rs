@@ -11,10 +11,10 @@ use api::{
 use plugins::PluginTool;
 use reqwest::blocking::Client;
 use runtime::{
-    edit_file, execute_bash, glob_search, grep_search, load_system_prompt, read_file, write_file,
-    ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ContentBlock, ConversationMessage,
-    ConversationRuntime, GrepSearchInput, MessageRole, PermissionMode, PermissionPolicy,
-    RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
+    edit_file, execute_bash, glob_search, grep_search, load_credentials_entry, load_system_prompt,
+    read_file, write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ContentBlock,
+    ConversationMessage, ConversationRuntime, GrepSearchInput, MessageRole, PermissionMode,
+    PermissionPolicy, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1513,6 +1513,12 @@ const DEFAULT_AGENT_MODEL: &str = "claude-opus-4-6";
 const DEFAULT_AGENT_SYSTEM_DATE: &str = "2026-03-31";
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
 
+#[derive(Debug, Clone, Deserialize)]
+struct StartupPreferences {
+    #[serde(default)]
+    default_model: Option<String>,
+}
+
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
     execute_agent_with_spawn(input, spawn_agent_job)
 }
@@ -1669,8 +1675,17 @@ fn resolve_agent_model(model: Option<&str>) -> String {
     model
         .map(str::trim)
         .filter(|model| !model.is_empty())
-        .unwrap_or(DEFAULT_AGENT_MODEL)
-        .to_string()
+        .map(ToOwned::to_owned)
+        .or_else(resolve_startup_default_agent_model)
+        .unwrap_or_else(|| DEFAULT_AGENT_MODEL.to_string())
+}
+
+fn resolve_startup_default_agent_model() -> Option<String> {
+    load_credentials_entry::<StartupPreferences>("startupPreferences")
+        .ok()
+        .and_then(std::convert::identity)
+        .and_then(|preferences| preferences.default_model)
+        .filter(|model| !model.trim().is_empty())
 }
 
 fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
@@ -3538,9 +3553,17 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-store");
+        let config_home = temp_path("agent-config-home");
         std::env::set_var("CLAW_AGENT_STORE", &dir);
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
         let captured = Arc::new(Mutex::new(None::<AgentJob>));
         let captured_for_spawn = Arc::clone(&captured);
+
+        runtime::save_credentials_entry(
+            "startupPreferences",
+            &json!({"default_model": "github-copilot/gpt-5.4"}),
+        )
+        .expect("startup preference should be written");
 
         let manifest = execute_agent_with_spawn(
             AgentInput {
@@ -3559,6 +3582,7 @@ mod tests {
         )
         .expect("Agent should succeed");
         std::env::remove_var("CLAW_AGENT_STORE");
+        std::env::remove_var("CLAW_CONFIG_HOME");
 
         assert_eq!(manifest.name, "ship-audit");
         assert_eq!(manifest.subagent_type.as_deref(), Some("Explore"));
@@ -3573,6 +3597,7 @@ mod tests {
         assert!(contents.contains("Check tests and outstanding work."));
         assert!(manifest_contents.contains("\"subagentType\": \"Explore\""));
         assert!(manifest_contents.contains("\"status\": \"running\""));
+        assert!(manifest_contents.contains("\"model\": \"github-copilot/gpt-5.4\""));
         let captured_job = captured
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -3607,6 +3632,7 @@ mod tests {
         let named_output: serde_json::Value = serde_json::from_str(&named).expect("valid json");
         assert_eq!(named_output["name"], "ship-audit");
         let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(config_home);
     }
 
     #[test]
