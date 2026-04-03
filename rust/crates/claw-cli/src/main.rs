@@ -877,7 +877,7 @@ fn format_model_report(
   Current          {model}
   Session          {message_count} messages · {turns} turns
 
-Aliases
+Quick picks
   opus             claude-opus-4-6
   sonnet           claude-sonnet-4-6
   haiku            claude-haiku-4-5-20251213
@@ -889,22 +889,24 @@ Next
   /model <name>    Switch models for this REPL session"
     );
     if let Some(cache) = copilot_availability {
-        let available = if cache.available.is_empty() {
-            "(none detected)".to_string()
-        } else {
-            cache.available.join(", ")
-        };
         let checked_ago_minutes = now_ms().saturating_sub(cache.checked_at) / 60_000;
         report.push_str(&format!(
             "\n\nGitHub Copilot
-  Available        {available}
   Checked          {checked_ago_minutes} minute(s) ago"
         ));
+        if cache.available.is_empty() {
+            report.push_str("\n  Available        (none detected)");
+        } else {
+            report.push_str("\n  Available");
+            for model_id in &cache.available {
+                report.push_str(&format!("\n  - github-copilot/{model_id}"));
+            }
+        }
         if !cache.unavailable.is_empty() {
-            report.push_str(&format!(
-                "\n  Unavailable      {}",
-                cache.unavailable.join(", ")
-            ));
+            report.push_str("\n\nNot available on this account");
+            for model_id in &cache.unavailable {
+                report.push_str(&format!("\n  - github-copilot/{model_id}"));
+            }
         }
     }
     report
@@ -4315,7 +4317,7 @@ mod tests {
         describe_tool_progress, filter_tool_specs, format_compact_report, format_cost_report,
         format_internal_prompt_progress_line, format_model_report, format_model_switch_report,
         format_permissions_report, format_permissions_switch_report, format_resume_report,
-        format_status_report, format_tool_call_start, format_tool_result,
+        format_status_report, format_tool_call_start, format_tool_result, now_ms,
         normalize_permission_mode, parse_args, parse_git_status_metadata, permission_policy,
         print_help_to, push_output_block, render_config_report, render_memory_report,
         render_repl_help, render_unknown_repl_command, resolve_model_alias, response_to_events,
@@ -4323,7 +4325,7 @@ mod tests {
         CliAction, CliOutputFormat, InternalPromptProgressEvent, InternalPromptProgressState,
         SlashCommand, StatusUsage, DEFAULT_MODEL,
     };
-    use api::{MessageResponse, OutputContentBlock, Usage};
+    use api::{GithubCopilotModelAvailability, MessageResponse, OutputContentBlock, Usage};
     use plugins::{PluginTool, PluginToolDefinition, PluginToolPermission};
     use runtime::{AssistantEvent, ContentBlock, ConversationMessage, MessageRole, PermissionMode};
     use serde_json::json;
@@ -4812,8 +4814,28 @@ mod tests {
         assert!(report.contains("Model"));
         assert!(report.contains("Current          sonnet"));
         assert!(report.contains("Session          12 messages · 4 turns"));
-        assert!(report.contains("Aliases"));
+        assert!(report.contains("Quick picks"));
         assert!(report.contains("/model <name>    Switch models for this REPL session"));
+    }
+
+    #[test]
+    fn model_report_lists_detected_copilot_models() {
+        let report = format_model_report(
+            "github-copilot/gpt-5.4",
+            0,
+            0,
+            Some(&GithubCopilotModelAvailability {
+                checked_at: now_ms(),
+                available: vec!["gpt-5.4".to_string(), "gpt-4o".to_string()],
+                unavailable: vec!["o1".to_string()],
+            }),
+        );
+        assert!(report.contains("GitHub Copilot"));
+        assert!(report.contains("Available"));
+        assert!(report.contains("github-copilot/gpt-5.4"));
+        assert!(report.contains("github-copilot/gpt-4o"));
+        assert!(report.contains("Not available on this account"));
+        assert!(report.contains("github-copilot/o1"));
     }
 
     #[test]
