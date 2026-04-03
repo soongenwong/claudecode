@@ -1,4 +1,4 @@
-# m1nd-Guided Research Report
+# m1nd MCP Post-Implementation Report
 
 This report covers only the research side of the GitHub Copilot rollout work:
 
@@ -56,7 +56,7 @@ The correct framing is:
 
 ```mermaid
 mindmap
-  root((m1nd-guided rollout research))
+  root((m1nd MCP post-implementation))
     Entry points
       CLI parse_args
       login flows
