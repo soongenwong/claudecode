@@ -5,6 +5,7 @@ use crate::error::ApiError;
 use crate::types::{MessageRequest, MessageResponse};
 
 pub mod claw_provider;
+pub mod github_copilot;
 pub mod openai_compat;
 
 pub type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ApiError>> + Send + 'a>>;
@@ -26,6 +27,7 @@ pub trait Provider {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
     ClawApi,
+    GithubCopilot,
     Xai,
     OpenAi,
 }
@@ -91,6 +93,24 @@ const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
             auth_env: "ANTHROPIC_API_KEY",
             base_url_env: "ANTHROPIC_BASE_URL",
             default_base_url: claw_provider::DEFAULT_BASE_URL,
+        },
+    ),
+    (
+        "github-copilot/gpt-4o",
+        ProviderMetadata {
+            provider: ProviderKind::GithubCopilot,
+            auth_env: "COPILOT_GITHUB_TOKEN",
+            base_url_env: "COPILOT_BASE_URL",
+            default_base_url: github_copilot::DEFAULT_BASE_URL,
+        },
+    ),
+    (
+        "github-copilot/gpt-5.4",
+        ProviderMetadata {
+            provider: ProviderKind::GithubCopilot,
+            auth_env: "COPILOT_GITHUB_TOKEN",
+            base_url_env: "COPILOT_BASE_URL",
+            default_base_url: github_copilot::DEFAULT_BASE_URL,
         },
     ),
     (
@@ -160,6 +180,7 @@ pub fn resolve_model_alias(model: &str) -> String {
                     "grok-2" => "grok-2",
                     _ => trimmed,
                 },
+                ProviderKind::GithubCopilot => trimmed,
                 ProviderKind::OpenAi => trimmed,
             })
         })
@@ -172,6 +193,14 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
     let lower = canonical.to_ascii_lowercase();
     if let Some((_, metadata)) = MODEL_REGISTRY.iter().find(|(alias, _)| *alias == lower) {
         return Some(*metadata);
+    }
+    if lower.starts_with("github-copilot/") {
+        return Some(ProviderMetadata {
+            provider: ProviderKind::GithubCopilot,
+            auth_env: "COPILOT_GITHUB_TOKEN",
+            base_url_env: "COPILOT_BASE_URL",
+            default_base_url: github_copilot::DEFAULT_BASE_URL,
+        });
     }
     if lower.starts_with("grok") {
         return Some(ProviderMetadata {
@@ -192,6 +221,17 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
     if claw_provider::has_auth_from_env_or_saved().unwrap_or(false) {
         return ProviderKind::ClawApi;
     }
+    if github_copilot::load_saved_github_token()
+        .ok()
+        .and_then(std::convert::identity)
+        .is_some()
+        || github_copilot::load_cached_runtime_token()
+            .ok()
+            .and_then(std::convert::identity)
+            .is_some()
+    {
+        return ProviderKind::GithubCopilot;
+    }
     if openai_compat::has_api_key("OPENAI_API_KEY") {
         return ProviderKind::OpenAi;
     }
@@ -204,7 +244,9 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
 #[must_use]
 pub fn max_tokens_for_model(model: &str) -> u32 {
     let canonical = resolve_model_alias(model);
-    if canonical.contains("opus") {
+    if canonical.starts_with("github-copilot/") {
+        8_192
+    } else if canonical.contains("opus") {
         32_000
     } else {
         64_000
@@ -226,6 +268,10 @@ mod tests {
     fn detects_provider_from_model_name_first() {
         assert_eq!(detect_provider_kind("grok"), ProviderKind::Xai);
         assert_eq!(
+            detect_provider_kind("github-copilot/gpt-4o"),
+            ProviderKind::GithubCopilot
+        );
+        assert_eq!(
             detect_provider_kind("claude-sonnet-4-6"),
             ProviderKind::ClawApi
         );
@@ -235,5 +281,6 @@ mod tests {
     fn keeps_existing_max_token_heuristic() {
         assert_eq!(max_tokens_for_model("opus"), 32_000);
         assert_eq!(max_tokens_for_model("grok-3"), 64_000);
+        assert_eq!(max_tokens_for_model("github-copilot/gpt-4o"), 8_192);
     }
 }

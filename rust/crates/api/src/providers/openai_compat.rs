@@ -12,10 +12,12 @@ use crate::types::{
     ToolChoice, ToolDefinition, ToolResultContentBlock, Usage,
 };
 
+use super::github_copilot;
 use super::{Provider, ProviderFuture};
 
 pub const DEFAULT_XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+pub const DEFAULT_GITHUB_COPILOT_BASE_URL: &str = github_copilot::DEFAULT_BASE_URL;
 const REQUEST_ID_HEADER: &str = "request-id";
 const ALT_REQUEST_ID_HEADER: &str = "x-request-id";
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(200);
@@ -32,6 +34,7 @@ pub struct OpenAiCompatConfig {
 
 const XAI_ENV_VARS: &[&str] = &["XAI_API_KEY"];
 const OPENAI_ENV_VARS: &[&str] = &["OPENAI_API_KEY"];
+const GITHUB_COPILOT_ENV_VARS: &[&str] = &["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"];
 
 impl OpenAiCompatConfig {
     #[must_use]
@@ -53,11 +56,23 @@ impl OpenAiCompatConfig {
             default_base_url: DEFAULT_OPENAI_BASE_URL,
         }
     }
+
+    #[must_use]
+    pub const fn github_copilot() -> Self {
+        Self {
+            provider_name: "GitHub Copilot",
+            api_key_env: "COPILOT_GITHUB_TOKEN",
+            base_url_env: "COPILOT_BASE_URL",
+            default_base_url: DEFAULT_GITHUB_COPILOT_BASE_URL,
+        }
+    }
+
     #[must_use]
     pub fn credential_env_vars(self) -> &'static [&'static str] {
         match self.provider_name {
             "xAI" => XAI_ENV_VARS,
             "OpenAI" => OPENAI_ENV_VARS,
+            "GitHub Copilot" => GITHUB_COPILOT_ENV_VARS,
             _ => &[],
         }
     }
@@ -66,6 +81,7 @@ impl OpenAiCompatConfig {
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatClient {
     http: reqwest::Client,
+    config: OpenAiCompatConfig,
     api_key: String,
     base_url: String,
     max_retries: u32,
@@ -78,6 +94,7 @@ impl OpenAiCompatClient {
     pub fn new(api_key: impl Into<String>, config: OpenAiCompatConfig) -> Self {
         Self {
             http: reqwest::Client::new(),
+            config,
             api_key: api_key.into(),
             base_url: read_base_url(config),
             max_retries: DEFAULT_MAX_RETRIES,
@@ -186,10 +203,20 @@ impl OpenAiCompatClient {
         request: &MessageRequest,
     ) -> Result<reqwest::Response, ApiError> {
         let request_url = chat_completions_endpoint(&self.base_url);
-        self.http
+        let mut request_builder = self
+            .http
             .post(&request_url)
             .header("content-type", "application/json")
-            .bearer_auth(&self.api_key)
+            .bearer_auth(&self.api_key);
+
+        for (key, value) in static_headers_for_config(self.config) {
+            request_builder = request_builder.header(*key, *value);
+        }
+        for (key, value) in dynamic_headers_for_config(self.config, request) {
+            request_builder = request_builder.header(key, value);
+        }
+
+        request_builder
             .json(&build_chat_completion_request(request))
             .send()
             .await
@@ -643,12 +670,18 @@ fn build_chat_completion_request(request: &MessageRequest) -> Value {
         messages.extend(translate_message(message));
     }
 
+    let model_name = effective_model_name(request);
     let mut payload = json!({
-        "model": request.model,
-        "max_tokens": request.max_tokens,
+        "model": model_name,
         "messages": messages,
         "stream": request.stream,
     });
+
+    if uses_max_completion_tokens(&model_name) {
+        payload["max_completion_tokens"] = json!(request.max_tokens);
+    } else {
+        payload["max_tokens"] = json!(request.max_tokens);
+    }
 
     if let Some(tools) = &request.tools {
         payload["tools"] =
@@ -659,6 +692,18 @@ fn build_chat_completion_request(request: &MessageRequest) -> Value {
     }
 
     payload
+}
+
+fn effective_model_name(request: &MessageRequest) -> String {
+    request
+        .model
+        .strip_prefix("github-copilot/")
+        .unwrap_or(&request.model)
+        .to_string()
+}
+
+fn uses_max_completion_tokens(model_name: &str) -> bool {
+    model_name.trim().to_ascii_lowercase().starts_with("gpt-5")
 }
 
 fn translate_message(message: &InputMessage) -> Vec<Value> {
@@ -883,7 +928,9 @@ fn request_id_from_headers(headers: &reqwest::header::HeaderMap) -> Option<Strin
         .map(ToOwned::to_owned)
 }
 
-async fn expect_success(response: reqwest::Response) -> Result<reqwest::Response, ApiError> {
+pub(crate) async fn expect_success(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, ApiError> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
@@ -904,6 +951,30 @@ async fn expect_success(response: reqwest::Response) -> Result<reqwest::Response
         body,
         retryable,
     })
+}
+
+fn static_headers_for_config(
+    config: OpenAiCompatConfig,
+) -> &'static [(&'static str, &'static str)] {
+    match config.provider_name {
+        "GitHub Copilot" => &[
+            ("User-Agent", "GitHubCopilotChat/0.35.0"),
+            ("Editor-Version", "vscode/1.107.0"),
+            ("Editor-Plugin-Version", "copilot-chat/0.35.0"),
+            ("Copilot-Integration-Id", "vscode-chat"),
+        ],
+        _ => &[],
+    }
+}
+
+fn dynamic_headers_for_config(
+    config: OpenAiCompatConfig,
+    request: &MessageRequest,
+) -> Vec<(&'static str, String)> {
+    match config.provider_name {
+        "GitHub Copilot" => github_copilot::dynamic_headers_for_request(request),
+        _ => Vec::new(),
+    }
 }
 
 const fn is_retryable_status(status: reqwest::StatusCode) -> bool {
@@ -982,6 +1053,23 @@ mod tests {
         assert_eq!(payload["messages"][2]["role"], json!("tool"));
         assert_eq!(payload["tools"][0]["type"], json!("function"));
         assert_eq!(payload["tool_choice"], json!("auto"));
+    }
+
+    #[test]
+    fn github_copilot_request_translation_normalizes_model_and_token_field() {
+        let payload = build_chat_completion_request(&MessageRequest {
+            model: "github-copilot/gpt-5.4".to_string(),
+            max_tokens: 128,
+            messages: vec![InputMessage::user_text("hello")],
+            system: None,
+            tools: None,
+            tool_choice: None,
+            stream: false,
+        });
+
+        assert_eq!(payload["model"], json!("gpt-5.4"));
+        assert_eq!(payload["max_completion_tokens"], json!(128));
+        assert!(payload.get("max_tokens").is_none());
     }
 
     #[test]

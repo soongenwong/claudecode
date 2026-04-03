@@ -1,5 +1,6 @@
 use crate::error::ApiError;
 use crate::providers::claw_provider::{self, AuthSource, ClawApiClient};
+use crate::providers::github_copilot;
 use crate::providers::openai_compat::{self, OpenAiCompatClient, OpenAiCompatConfig};
 use crate::providers::{self, Provider, ProviderKind};
 use crate::types::{MessageRequest, MessageResponse, StreamEvent};
@@ -21,6 +22,7 @@ async fn stream_via_provider<P: Provider>(
 #[derive(Debug, Clone)]
 pub enum ProviderClient {
     ClawApi(ClawApiClient),
+    GithubCopilot(OpenAiCompatClient),
     Xai(OpenAiCompatClient),
     OpenAi(OpenAiCompatClient),
 }
@@ -40,6 +42,9 @@ impl ProviderClient {
                 Some(auth) => ClawApiClient::from_auth(auth),
                 None => ClawApiClient::from_env()?,
             })),
+            ProviderKind::GithubCopilot => {
+                Ok(Self::GithubCopilot(github_copilot::client_from_env()?))
+            }
             ProviderKind::Xai => Ok(Self::Xai(OpenAiCompatClient::from_env(
                 OpenAiCompatConfig::xai(),
             )?)),
@@ -53,6 +58,7 @@ impl ProviderClient {
     pub const fn provider_kind(&self) -> ProviderKind {
         match self {
             Self::ClawApi(_) => ProviderKind::ClawApi,
+            Self::GithubCopilot(_) => ProviderKind::GithubCopilot,
             Self::Xai(_) => ProviderKind::Xai,
             Self::OpenAi(_) => ProviderKind::OpenAi,
         }
@@ -64,7 +70,9 @@ impl ProviderClient {
     ) -> Result<MessageResponse, ApiError> {
         match self {
             Self::ClawApi(client) => send_via_provider(client, request).await,
-            Self::Xai(client) | Self::OpenAi(client) => send_via_provider(client, request).await,
+            Self::GithubCopilot(client) | Self::Xai(client) | Self::OpenAi(client) => {
+                send_via_provider(client, request).await
+            }
         }
     }
 
@@ -76,9 +84,11 @@ impl ProviderClient {
             Self::ClawApi(client) => stream_via_provider(client, request)
                 .await
                 .map(MessageStream::ClawApi),
-            Self::Xai(client) | Self::OpenAi(client) => stream_via_provider(client, request)
-                .await
-                .map(MessageStream::OpenAiCompat),
+            Self::GithubCopilot(client) | Self::Xai(client) | Self::OpenAi(client) => {
+                stream_via_provider(client, request)
+                    .await
+                    .map(MessageStream::OpenAiCompat)
+            }
         }
     }
 }

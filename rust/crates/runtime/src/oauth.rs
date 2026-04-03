@@ -3,6 +3,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::PathBuf;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -259,36 +260,54 @@ pub fn credentials_path() -> io::Result<PathBuf> {
     Ok(credentials_home_dir()?.join("credentials.json"))
 }
 
-pub fn load_oauth_credentials() -> io::Result<Option<OAuthTokenSet>> {
+pub fn load_credentials_entry<T>(key: &str) -> io::Result<Option<T>>
+where
+    T: DeserializeOwned,
+{
     let path = credentials_path()?;
     let root = read_credentials_root(&path)?;
-    let Some(oauth) = root.get("oauth") else {
+    let Some(value) = root.get(key) else {
         return Ok(None);
     };
-    if oauth.is_null() {
+    if value.is_null() {
         return Ok(None);
     }
-    let stored = serde_json::from_value::<StoredOAuthCredentials>(oauth.clone())
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    Ok(Some(stored.into()))
+    serde_json::from_value::<T>(value.clone())
+        .map(Some)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-pub fn save_oauth_credentials(token_set: &OAuthTokenSet) -> io::Result<()> {
+pub fn save_credentials_entry<T>(key: &str, value: &T) -> io::Result<()>
+where
+    T: Serialize,
+{
     let path = credentials_path()?;
     let mut root = read_credentials_root(&path)?;
     root.insert(
-        "oauth".to_string(),
-        serde_json::to_value(StoredOAuthCredentials::from(token_set.clone()))
+        key.to_string(),
+        serde_json::to_value(value)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
     );
     write_credentials_root(&path, &root)
 }
 
-pub fn clear_oauth_credentials() -> io::Result<()> {
+pub fn clear_credentials_entry(key: &str) -> io::Result<()> {
     let path = credentials_path()?;
     let mut root = read_credentials_root(&path)?;
-    root.remove("oauth");
+    root.remove(key);
     write_credentials_root(&path, &root)
+}
+
+pub fn load_oauth_credentials() -> io::Result<Option<OAuthTokenSet>> {
+    load_credentials_entry::<StoredOAuthCredentials>("oauth").map(|value| value.map(Into::into))
+}
+
+pub fn save_oauth_credentials(token_set: &OAuthTokenSet) -> io::Result<()> {
+    save_credentials_entry("oauth", &StoredOAuthCredentials::from(token_set.clone()))
+}
+
+pub fn clear_oauth_credentials() -> io::Result<()> {
+    clear_credentials_entry("oauth")
 }
 
 pub fn parse_oauth_callback_request_target(target: &str) -> Result<OAuthCallbackParams, String> {

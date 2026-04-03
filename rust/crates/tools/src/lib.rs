@@ -91,7 +91,10 @@ impl GlobalToolRegistry {
         Ok(Self { plugin_tools })
     }
 
-    pub fn normalize_allowed_tools(&self, values: &[String]) -> Result<Option<BTreeSet<String>>, String> {
+    pub fn normalize_allowed_tools(
+        &self,
+        values: &[String],
+    ) -> Result<Option<BTreeSet<String>>, String> {
         if values.is_empty() {
             return Ok(None);
         }
@@ -100,7 +103,11 @@ impl GlobalToolRegistry {
         let canonical_names = builtin_specs
             .iter()
             .map(|spec| spec.name.to_string())
-            .chain(self.plugin_tools.iter().map(|tool| tool.definition().name.clone()))
+            .chain(
+                self.plugin_tools
+                    .iter()
+                    .map(|tool| tool.definition().name.clone()),
+            )
             .collect::<Vec<_>>();
         let mut name_map = canonical_names
             .iter()
@@ -151,7 +158,8 @@ impl GlobalToolRegistry {
             .plugin_tools
             .iter()
             .filter(|tool| {
-                allowed_tools.is_none_or(|allowed| allowed.contains(tool.definition().name.as_str()))
+                allowed_tools
+                    .is_none_or(|allowed| allowed.contains(tool.definition().name.as_str()))
             })
             .map(|tool| ToolDefinition {
                 name: tool.definition().name.clone(),
@@ -174,7 +182,8 @@ impl GlobalToolRegistry {
             .plugin_tools
             .iter()
             .filter(|tool| {
-                allowed_tools.is_none_or(|allowed| allowed.contains(tool.definition().name.as_str()))
+                allowed_tools
+                    .is_none_or(|allowed| allowed.contains(tool.definition().name.as_str()))
             })
             .map(|tool| {
                 (
@@ -498,6 +507,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
             description: "Return structured output in the requested format.",
             input_schema: json!({
                 "type": "object",
+                "properties": {},
+                "required": [],
                 "additionalProperties": true
             }),
             required_permission: PermissionMode::ReadOnly,

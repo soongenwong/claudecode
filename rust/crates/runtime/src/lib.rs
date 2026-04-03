@@ -17,10 +17,6 @@ pub mod sandbox;
 mod session;
 mod usage;
 
-pub use lsp::{
-    FileDiagnostics, LspContextEnrichment, LspError, LspManager, LspServerConfig,
-    SymbolLocation, WorkspaceDiagnostics,
-};
 pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
 pub use compact::{
@@ -28,8 +24,8 @@ pub use compact::{
     get_compact_continuation_message, should_compact, CompactionConfig, CompactionResult,
 };
 pub use config::{
-    ConfigEntry, ConfigError, ConfigLoader, ConfigSource, McpManagedProxyServerConfig,
-    McpConfigCollection, McpOAuthConfig, McpRemoteServerConfig, McpSdkServerConfig,
+    ConfigEntry, ConfigError, ConfigLoader, ConfigSource, McpConfigCollection,
+    McpManagedProxyServerConfig, McpOAuthConfig, McpRemoteServerConfig, McpSdkServerConfig,
     McpServerConfig, McpStdioServerConfig, McpTransport, McpWebSocketServerConfig, OAuthConfig,
     ResolvedPermissionMode, RuntimeConfig, RuntimeFeatureConfig, RuntimeHookConfig,
     RuntimePluginConfig, ScopedMcpServerConfig, CLAW_SETTINGS_SCHEMA_NAME,
@@ -44,12 +40,16 @@ pub use file_ops::{
     WriteFileOutput,
 };
 pub use hooks::{HookEvent, HookRunResult, HookRunner};
+pub use lsp::{
+    FileDiagnostics, LspContextEnrichment, LspError, LspManager, LspServerConfig, SymbolLocation,
+    WorkspaceDiagnostics,
+};
 pub use mcp::{
     mcp_server_signature, mcp_tool_name, mcp_tool_prefix, normalize_name_for_mcp,
     scoped_mcp_config_hash, unwrap_ccr_proxy_url,
 };
 pub use mcp_client::{
-    McpManagedProxyTransport, McpClientAuth, McpClientBootstrap, McpClientTransport,
+    McpClientAuth, McpClientBootstrap, McpClientTransport, McpManagedProxyTransport,
     McpRemoteTransport, McpSdkTransport, McpStdioTransport,
 };
 pub use mcp_stdio::{
@@ -61,11 +61,12 @@ pub use mcp_stdio::{
     McpToolCallContent, McpToolCallParams, McpToolCallResult, UnsupportedMcpServer,
 };
 pub use oauth::{
-    clear_oauth_credentials, code_challenge_s256, credentials_path, generate_pkce_pair,
-    generate_state, load_oauth_credentials, loopback_redirect_uri, parse_oauth_callback_query,
-    parse_oauth_callback_request_target, save_oauth_credentials, OAuthAuthorizationRequest,
-    OAuthCallbackParams, OAuthRefreshRequest, OAuthTokenExchangeRequest, OAuthTokenSet,
-    PkceChallengeMethod, PkceCodePair,
+    clear_credentials_entry, clear_oauth_credentials, code_challenge_s256, credentials_path,
+    generate_pkce_pair, generate_state, load_credentials_entry, load_oauth_credentials,
+    loopback_redirect_uri, parse_oauth_callback_query, parse_oauth_callback_request_target,
+    save_credentials_entry, save_oauth_credentials, OAuthAuthorizationRequest, OAuthCallbackParams,
+    OAuthRefreshRequest, OAuthTokenExchangeRequest, OAuthTokenSet, PkceChallengeMethod,
+    PkceCodePair,
 };
 pub use permissions::{
     PermissionMode, PermissionOutcome, PermissionPolicy, PermissionPromptDecision,

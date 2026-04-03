@@ -10,6 +10,13 @@ pub use client::{
 };
 pub use error::ApiError;
 pub use providers::claw_provider::{AuthSource, ClawApiClient, ClawApiClient as ApiClient};
+pub use providers::github_copilot::{
+    clear_github_token as clear_github_copilot_token, load_saved_github_token,
+    poll_for_access_token as poll_for_github_copilot_access_token,
+    request_device_code as request_github_copilot_device_code,
+    resolve_runtime_auth as resolve_github_copilot_runtime_auth,
+    save_github_token as save_github_copilot_token, GithubDeviceCodeResponse,
+};
 pub use providers::openai_compat::{OpenAiCompatClient, OpenAiCompatConfig};
 pub use providers::{
     detect_provider_kind, max_tokens_for_model, resolve_model_alias, ProviderKind,

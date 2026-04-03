@@ -16,9 +16,11 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use api::{
-    resolve_startup_auth_source, AuthSource, ClawApiClient, ContentBlockDelta, InputContentBlock,
-    InputMessage, MessageRequest, MessageResponse, OutputContentBlock,
-    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
+    poll_for_github_copilot_access_token, request_github_copilot_device_code,
+    save_github_copilot_token, AuthSource, ClawApiClient, ContentBlockDelta,
+    InputContentBlock, InputMessage, MessageRequest, MessageResponse, OutputContentBlock,
+    ProviderClient, StreamEvent as ApiStreamEvent, ToolChoice,
+    ToolDefinition, ToolResultContentBlock,
 };
 
 use commands::{
@@ -101,7 +103,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         } => LiveCli::new(model, true, allowed_tools, permission_mode)?
             .run_turn_with_output(&prompt, output_format)?,
         CliAction::Login => run_login()?,
+        CliAction::LoginGithubCopilot => run_login_github_copilot()?,
         CliAction::Logout => run_logout()?,
+        CliAction::LogoutGithubCopilot => run_logout_github_copilot()?,
         CliAction::Init => run_init()?,
         CliAction::Repl {
             model,
@@ -140,7 +144,9 @@ enum CliAction {
         permission_mode: PermissionMode,
     },
     Login,
+    LoginGithubCopilot,
     Logout,
+    LogoutGithubCopilot,
     Init,
     Repl {
         model: String,
@@ -294,7 +300,9 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
         }),
         "system-prompt" => parse_system_prompt_args(&rest[1..]),
         "login" => Ok(CliAction::Login),
+        "login-github-copilot" => Ok(CliAction::LoginGithubCopilot),
         "logout" => Ok(CliAction::Logout),
+        "logout-github-copilot" => Ok(CliAction::LogoutGithubCopilot),
         "init" => Ok(CliAction::Init),
         "prompt" => {
             let prompt = rest[1..].join(" ");
@@ -555,9 +563,48 @@ fn run_login() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run_login_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::other("GitHub Copilot login requires an interactive TTY").into());
+    }
+
+    println!("Starting GitHub Copilot device login...");
+    let runtime = tokio::runtime::Runtime::new()?;
+    let device = runtime.block_on(request_github_copilot_device_code())?;
+
+    println!("Open this URL and enter the code below:");
+    println!("{}", device.verification_uri);
+    println!("Code: {}", device.user_code);
+    if let Err(error) = open_browser(&device.verification_uri) {
+        eprintln!("warning: failed to open browser automatically: {error}");
+    }
+
+    let github_token = runtime.block_on(poll_for_github_copilot_access_token(&device))?;
+    save_github_copilot_token(&github_token)?;
+    let resolved = runtime.block_on(api::resolve_github_copilot_runtime_auth())?;
+    let expires_in_minutes = resolved.expires_at.saturating_sub(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64,
+    ) / 60_000;
+
+    println!("GitHub Copilot login complete.");
+    println!("Cached Copilot token source: {}", resolved.source);
+    println!("Cached Copilot token expires in ~{expires_in_minutes} minutes.");
+    Ok(())
+}
+
 fn run_logout() -> Result<(), Box<dyn std::error::Error>> {
     clear_oauth_credentials()?;
     println!("Claw OAuth credentials cleared.");
+    Ok(())
+}
+
+fn run_logout_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
+    api::clear_github_copilot_token()?;
+    runtime::clear_credentials_entry("githubCopilotRuntime")?;
+    println!("GitHub Copilot credentials cleared.");
     Ok(())
 }
 
@@ -3040,7 +3087,7 @@ impl runtime::PermissionPrompter for CliPermissionPrompter {
 
 struct DefaultRuntimeClient {
     runtime: tokio::runtime::Runtime,
-    client: ClawApiClient,
+    client: ProviderClient,
     model: String,
     enable_tools: bool,
     emit_output: bool,
@@ -3060,8 +3107,7 @@ impl DefaultRuntimeClient {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
-            client: ClawApiClient::from_auth(resolve_cli_auth_source()?)
-                .with_base_url(api::read_base_url()),
+            client: ProviderClient::from_model(&model)?,
             model,
             enable_tools,
             emit_output,
@@ -3070,16 +3116,6 @@ impl DefaultRuntimeClient {
             progress_reporter,
         })
     }
-}
-
-fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
-    Ok(resolve_startup_auth_source(|| {
-        let cwd = env::current_dir().map_err(api::ApiError::from)?;
-        let config = ConfigLoader::default_for(&cwd).load().map_err(|error| {
-            api::ApiError::Auth(format!("failed to load runtime OAuth config: {error}"))
-        })?;
-        Ok(config.oauth().cloned())
-    })?)
 }
 
 impl ApiClient for DefaultRuntimeClient {
@@ -4035,7 +4071,15 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         out,
+        "  claw login-github-copilot             Start the GitHub Copilot device login flow"
+    )?;
+    writeln!(
+        out,
         "  claw logout                           Clear saved OAuth credentials"
+    )?;
+    writeln!(
+        out,
+        "  claw logout-github-copilot            Clear saved GitHub Copilot credentials"
     )?;
     writeln!(
         out,
@@ -4097,6 +4141,7 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "  claw agents")?;
     writeln!(out, "  claw /skills")?;
     writeln!(out, "  claw login")?;
+    writeln!(out, "  claw login-github-copilot")?;
     writeln!(out, "  claw init")?;
     Ok(())
 }
@@ -4310,8 +4355,18 @@ mod tests {
             CliAction::Login
         );
         assert_eq!(
+            parse_args(&["login-github-copilot".to_string()])
+                .expect("login-github-copilot should parse"),
+            CliAction::LoginGithubCopilot
+        );
+        assert_eq!(
             parse_args(&["logout".to_string()]).expect("logout should parse"),
             CliAction::Logout
+        );
+        assert_eq!(
+            parse_args(&["logout-github-copilot".to_string()])
+                .expect("logout-github-copilot should parse"),
+            CliAction::LogoutGithubCopilot
         );
         assert_eq!(
             parse_args(&["init".to_string()]).expect("init should parse"),
