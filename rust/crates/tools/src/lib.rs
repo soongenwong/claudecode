@@ -3110,6 +3110,29 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     fn temp_path(name: &str) -> PathBuf {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3554,10 +3577,8 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-store");
         let config_home = temp_path("agent-config-home");
-        let previous_agent_store = std::env::var_os("CLAW_AGENT_STORE");
-        let previous_config_home = std::env::var_os("CLAW_CONFIG_HOME");
-        std::env::set_var("CLAW_AGENT_STORE", &dir);
-        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        let _agent_store_guard = ScopedEnvVar::set("CLAW_AGENT_STORE", &dir);
+        let _config_home_guard = ScopedEnvVar::set("CLAW_CONFIG_HOME", &config_home);
         let captured = Arc::new(Mutex::new(None::<AgentJob>));
         let captured_for_spawn = Arc::clone(&captured);
 
@@ -3583,16 +3604,6 @@ mod tests {
             },
         )
         .expect("Agent should succeed");
-        if let Some(previous) = previous_agent_store {
-            std::env::set_var("CLAW_AGENT_STORE", previous);
-        } else {
-            std::env::remove_var("CLAW_AGENT_STORE");
-        }
-        if let Some(previous) = previous_config_home {
-            std::env::set_var("CLAW_CONFIG_HOME", previous);
-        } else {
-            std::env::remove_var("CLAW_CONFIG_HOME");
-        }
 
         assert_eq!(manifest.name, "ship-audit");
         assert_eq!(manifest.subagent_type.as_deref(), Some("Explore"));

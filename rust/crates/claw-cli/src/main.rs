@@ -4370,6 +4370,29 @@ mod tests {
         .expect("plugin tool registry should build")
     }
 
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     fn with_clean_config_home<T>(f: impl FnOnce() -> T) -> T {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let _lock = LOCK
@@ -4384,15 +4407,9 @@ mod tests {
                 .expect("clock should move forward")
                 .as_nanos()
         ));
-        let previous = std::env::var_os("CLAW_CONFIG_HOME");
         fs::create_dir_all(&config_home).expect("temp config home should be created");
-        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        let _env_guard = ScopedEnvVar::set("CLAW_CONFIG_HOME", &config_home);
         let result = f();
-        if let Some(previous) = previous {
-            std::env::set_var("CLAW_CONFIG_HOME", previous);
-        } else {
-            std::env::remove_var("CLAW_CONFIG_HOME");
-        }
         let _ = fs::remove_dir_all(config_home);
         result
     }
