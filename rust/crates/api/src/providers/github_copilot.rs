@@ -2,10 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use runtime::{clear_credentials_entry, load_credentials_entry, save_credentials_entry};
-use serde::{Deserialize, Serialize};
 use crate::error::ApiError;
 use crate::types::MessageRequest;
+use runtime::{clear_credentials_entry, load_credentials_entry, save_credentials_entry};
+use serde::{Deserialize, Serialize};
 
 use super::openai_compat::{OpenAiCompatClient, OpenAiCompatConfig};
 

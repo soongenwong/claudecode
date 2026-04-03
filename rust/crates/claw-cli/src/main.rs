@@ -16,11 +16,11 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use api::{
-    poll_for_github_copilot_access_token, request_github_copilot_device_code,
-    save_github_copilot_token, AuthSource, ClawApiClient, ContentBlockDelta,
-    InputContentBlock, InputMessage, MessageRequest, MessageResponse, OutputContentBlock,
-    ProviderClient, StreamEvent as ApiStreamEvent, ToolChoice,
-    ToolDefinition, ToolResultContentBlock,
+    load_saved_github_token, poll_for_github_copilot_access_token,
+    request_github_copilot_device_code, save_github_copilot_token, AuthSource, ClawApiClient,
+    ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
+    OutputContentBlock, ProviderClient, StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
+    ToolResultContentBlock,
 };
 
 use commands::{
@@ -33,17 +33,19 @@ use init::initialize_repo;
 use plugins::{PluginManager, PluginManagerConfig};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use runtime::{
-    clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
-    parse_oauth_callback_request_target, save_oauth_credentials, ApiClient, ApiRequest,
-    AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
-    ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest, OAuthConfig,
-    OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, RuntimeError,
-    Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    clear_oauth_credentials, generate_pkce_pair, generate_state, load_credentials_entry,
+    load_system_prompt, parse_oauth_callback_request_target, save_credentials_entry,
+    save_oauth_credentials, ApiClient, ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader,
+    ConfigSource, ContentBlock, ConversationMessage, ConversationRuntime, MessageRole,
+    OAuthAuthorizationRequest, OAuthConfig, OAuthTokenExchangeRequest, PermissionMode,
+    PermissionPolicy, ProjectContext, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
+    UsageTracker,
 };
 use serde_json::json;
 use tools::GlobalToolRegistry;
 
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
+const DEFAULT_GITHUB_COPILOT_MODEL: &str = "github-copilot/gpt-5.4";
 fn max_tokens_for_model(model: &str) -> u32 {
     if model.contains("opus") {
         32_000
@@ -59,6 +61,12 @@ const GIT_SHA: Option<&str> = option_env!("GIT_SHA");
 const INTERNAL_PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
 
 type AllowedToolSet = BTreeSet<String>;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StartupPreferences {
+    #[serde(default)]
+    default_model: Option<String>,
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -177,7 +185,7 @@ impl CliOutputFormat {
 
 #[allow(clippy::too_many_lines)]
 fn parse_args(args: &[String]) -> Result<CliAction, String> {
-    let mut model = DEFAULT_MODEL.to_string();
+    let mut model = resolve_startup_default_model();
     let mut output_format = CliOutputFormat::Text;
     let mut permission_mode = default_permission_mode();
     let mut wants_version = false;
@@ -375,8 +383,62 @@ fn resolve_model_alias(model: &str) -> &str {
         "opus" => "claude-opus-4-6",
         "sonnet" => "claude-sonnet-4-6",
         "haiku" => "claude-haiku-4-5-20251213",
+        "copilot" => DEFAULT_GITHUB_COPILOT_MODEL,
+        "copilot-4o" => "github-copilot/gpt-4o",
         _ => model,
     }
+}
+
+fn resolve_startup_default_model() -> String {
+    if let Ok(Some(preferences)) =
+        load_credentials_entry::<StartupPreferences>("startupPreferences")
+    {
+        if let Some(model) = preferences
+            .default_model
+            .as_deref()
+            .map(resolve_model_alias)
+            .filter(|model| !model.trim().is_empty())
+        {
+            return model.to_string();
+        }
+    }
+    DEFAULT_MODEL.to_string()
+}
+
+fn remember_startup_default_model(model: &str) -> Result<(), Box<dyn std::error::Error>> {
+    save_credentials_entry(
+        "startupPreferences",
+        &StartupPreferences {
+            default_model: Some(resolve_model_alias(model).to_string()),
+        },
+    )?;
+    Ok(())
+}
+
+fn clear_startup_default_model_if_matches(prefix: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(mut preferences) = load_credentials_entry::<StartupPreferences>("startupPreferences")?
+    else {
+        return Ok(());
+    };
+    if preferences
+        .default_model
+        .as_deref()
+        .is_some_and(|model| model.starts_with(prefix))
+    {
+        preferences.default_model = None;
+        save_credentials_entry("startupPreferences", &preferences)?;
+    }
+    Ok(())
+}
+
+fn uses_github_copilot_startup_default(model: &str) -> bool {
+    load_credentials_entry::<StartupPreferences>("startupPreferences")
+        .ok()
+        .and_then(std::convert::identity)
+        .and_then(|preferences| preferences.default_model)
+        .is_some_and(|preferred| {
+            resolve_model_alias(&preferred) == model && model.starts_with("github-copilot/")
+        })
 }
 
 fn normalize_allowed_tools(values: &[String]) -> Result<Option<AllowedToolSet>, String> {
@@ -568,6 +630,25 @@ fn run_login_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
         return Err(io::Error::other("GitHub Copilot login requires an interactive TTY").into());
     }
 
+    if load_saved_github_token()?.is_some() {
+        remember_startup_default_model(DEFAULT_GITHUB_COPILOT_MODEL)?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let resolved = runtime.block_on(api::resolve_github_copilot_runtime_auth())?;
+        let expires_in_minutes = resolved.expires_at.saturating_sub(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        ) / 60_000;
+        println!("GitHub Copilot credentials already available.");
+        println!("Cached Copilot token source: {}", resolved.source);
+        println!("Cached Copilot token expires in ~{expires_in_minutes} minutes.");
+        println!(
+            "Future `claw` launches will default to {DEFAULT_GITHUB_COPILOT_MODEL}. Use `--model` or `/model` to override."
+        );
+        return Ok(());
+    }
+
     println!("Starting GitHub Copilot device login...");
     let runtime = tokio::runtime::Runtime::new()?;
     let device = runtime.block_on(request_github_copilot_device_code())?;
@@ -581,6 +662,7 @@ fn run_login_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
 
     let github_token = runtime.block_on(poll_for_github_copilot_access_token(&device))?;
     save_github_copilot_token(&github_token)?;
+    remember_startup_default_model(DEFAULT_GITHUB_COPILOT_MODEL)?;
     let resolved = runtime.block_on(api::resolve_github_copilot_runtime_auth())?;
     let expires_in_minutes = resolved.expires_at.saturating_sub(
         SystemTime::now()
@@ -592,6 +674,9 @@ fn run_login_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
     println!("GitHub Copilot login complete.");
     println!("Cached Copilot token source: {}", resolved.source);
     println!("Cached Copilot token expires in ~{expires_in_minutes} minutes.");
+    println!(
+        "Future `claw` launches will default to {DEFAULT_GITHUB_COPILOT_MODEL}. Use `--model` or `/model` to override."
+    );
     Ok(())
 }
 
@@ -604,6 +689,7 @@ fn run_logout() -> Result<(), Box<dyn std::error::Error>> {
 fn run_logout_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
     api::clear_github_copilot_token()?;
     runtime::clear_credentials_entry("githubCopilotRuntime")?;
+    clear_startup_default_model_if_matches("github-copilot/")?;
     println!("GitHub Copilot credentials cleared.");
     Ok(())
 }
@@ -754,6 +840,8 @@ Aliases
   opus             claude-opus-4-6
   sonnet           claude-sonnet-4-6
   haiku            claude-haiku-4-5-20251213
+  copilot          github-copilot/gpt-5.4
+  copilot-4o       github-copilot/gpt-4o
 
 Next
   /model           Show the current model
@@ -1200,6 +1288,12 @@ impl LiveCli {
         if !has_claw_md {
             lines.push(
                 "  First run        /init scaffolds CLAW.md, .claw.json, and local session files"
+                    .to_string(),
+            );
+        }
+        if uses_github_copilot_startup_default(&self.model) {
+            lines.push(
+                "  Model source     GitHub Copilot login default · use /model to switch for this session"
                     .to_string(),
             );
         }
@@ -4168,8 +4262,10 @@ mod tests {
     use plugins::{PluginTool, PluginToolDefinition, PluginToolPermission};
     use runtime::{AssistantEvent, ContentBlock, ConversationMessage, MessageRole, PermissionMode};
     use serde_json::json;
+    use std::fs;
     use std::path::PathBuf;
-    use std::time::Duration;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tools::GlobalToolRegistry;
 
     fn registry_with_plugin_tool() -> GlobalToolRegistry {
@@ -4196,10 +4292,36 @@ mod tests {
         .expect("plugin tool registry should build")
     }
 
+    fn with_clean_config_home<T>(f: impl FnOnce() -> T) -> T {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _lock = LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let config_home = std::env::temp_dir().join(format!(
+            "claw-cli-test-home-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should move forward")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&config_home).expect("temp config home should be created");
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        let result = f();
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        let _ = fs::remove_dir_all(config_home);
+        result
+    }
+
+    fn parse_args_isolated(args: &[String]) -> Result<CliAction, String> {
+        with_clean_config_home(|| parse_args(args))
+    }
+
     #[test]
     fn defaults_to_repl_when_no_args() {
         assert_eq!(
-            parse_args(&[]).expect("args should parse"),
+            parse_args_isolated(&[]).expect("args should parse"),
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
                 allowed_tools: None,
@@ -4216,7 +4338,7 @@ mod tests {
             "world".to_string(),
         ];
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            parse_args_isolated(&args).expect("args should parse"),
             CliAction::Prompt {
                 prompt: "hello world".to_string(),
                 model: DEFAULT_MODEL.to_string(),
@@ -4237,7 +4359,7 @@ mod tests {
             "this".to_string(),
         ];
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            parse_args_isolated(&args).expect("args should parse"),
             CliAction::Prompt {
                 prompt: "explain this".to_string(),
                 model: "custom-opus".to_string(),
@@ -4257,7 +4379,7 @@ mod tests {
             "this".to_string(),
         ];
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            parse_args_isolated(&args).expect("args should parse"),
             CliAction::Prompt {
                 prompt: "explain this".to_string(),
                 model: "claude-opus-4-6".to_string(),
@@ -4279,11 +4401,11 @@ mod tests {
     #[test]
     fn parses_version_flags_without_initializing_prompt_mode() {
         assert_eq!(
-            parse_args(&["--version".to_string()]).expect("args should parse"),
+            parse_args_isolated(&["--version".to_string()]).expect("args should parse"),
             CliAction::Version
         );
         assert_eq!(
-            parse_args(&["-V".to_string()]).expect("args should parse"),
+            parse_args_isolated(&["-V".to_string()]).expect("args should parse"),
             CliAction::Version
         );
     }
@@ -4292,7 +4414,7 @@ mod tests {
     fn parses_permission_mode_flag() {
         let args = vec!["--permission-mode=read-only".to_string()];
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            parse_args_isolated(&args).expect("args should parse"),
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
                 allowed_tools: None,
@@ -4309,7 +4431,7 @@ mod tests {
             "--allowed-tools=write_file".to_string(),
         ];
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            parse_args_isolated(&args).expect("args should parse"),
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
                 allowed_tools: Some(
@@ -4325,7 +4447,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_allowed_tools() {
-        let error = parse_args(&["--allowedTools".to_string(), "teleport".to_string()])
+        let error = parse_args_isolated(&["--allowedTools".to_string(), "teleport".to_string()])
             .expect_err("tool should be rejected");
         assert!(error.contains("unsupported tool in --allowedTools: teleport"));
     }
@@ -4340,7 +4462,7 @@ mod tests {
             "2026-04-01".to_string(),
         ];
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            parse_args_isolated(&args).expect("args should parse"),
             CliAction::PrintSystemPrompt {
                 cwd: PathBuf::from("/tmp/project"),
                 date: "2026-04-01".to_string(),
@@ -4351,37 +4473,37 @@ mod tests {
     #[test]
     fn parses_login_and_logout_subcommands() {
         assert_eq!(
-            parse_args(&["login".to_string()]).expect("login should parse"),
+            parse_args_isolated(&["login".to_string()]).expect("login should parse"),
             CliAction::Login
         );
         assert_eq!(
-            parse_args(&["login-github-copilot".to_string()])
+            parse_args_isolated(&["login-github-copilot".to_string()])
                 .expect("login-github-copilot should parse"),
             CliAction::LoginGithubCopilot
         );
         assert_eq!(
-            parse_args(&["logout".to_string()]).expect("logout should parse"),
+            parse_args_isolated(&["logout".to_string()]).expect("logout should parse"),
             CliAction::Logout
         );
         assert_eq!(
-            parse_args(&["logout-github-copilot".to_string()])
+            parse_args_isolated(&["logout-github-copilot".to_string()])
                 .expect("logout-github-copilot should parse"),
             CliAction::LogoutGithubCopilot
         );
         assert_eq!(
-            parse_args(&["init".to_string()]).expect("init should parse"),
+            parse_args_isolated(&["init".to_string()]).expect("init should parse"),
             CliAction::Init
         );
         assert_eq!(
-            parse_args(&["agents".to_string()]).expect("agents should parse"),
+            parse_args_isolated(&["agents".to_string()]).expect("agents should parse"),
             CliAction::Agents { args: None }
         );
         assert_eq!(
-            parse_args(&["skills".to_string()]).expect("skills should parse"),
+            parse_args_isolated(&["skills".to_string()]).expect("skills should parse"),
             CliAction::Skills { args: None }
         );
         assert_eq!(
-            parse_args(&["agents".to_string(), "--help".to_string()])
+            parse_args_isolated(&["agents".to_string(), "--help".to_string()])
                 .expect("agents help should parse"),
             CliAction::Agents {
                 args: Some("--help".to_string())
@@ -4392,21 +4514,21 @@ mod tests {
     #[test]
     fn parses_direct_agents_and_skills_slash_commands() {
         assert_eq!(
-            parse_args(&["/agents".to_string()]).expect("/agents should parse"),
+            parse_args_isolated(&["/agents".to_string()]).expect("/agents should parse"),
             CliAction::Agents { args: None }
         );
         assert_eq!(
-            parse_args(&["/skills".to_string()]).expect("/skills should parse"),
+            parse_args_isolated(&["/skills".to_string()]).expect("/skills should parse"),
             CliAction::Skills { args: None }
         );
         assert_eq!(
-            parse_args(&["/skills".to_string(), "help".to_string()])
+            parse_args_isolated(&["/skills".to_string(), "help".to_string()])
                 .expect("/skills help should parse"),
             CliAction::Skills {
                 args: Some("help".to_string())
             }
         );
-        let error = parse_args(&["/status".to_string()])
+        let error = parse_args_isolated(&["/status".to_string()])
             .expect_err("/status should remain REPL-only when invoked directly");
         assert!(error.contains("Direct slash command unavailable"));
         assert!(error.contains("/status"));
@@ -4420,7 +4542,7 @@ mod tests {
             "/compact".to_string(),
         ];
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            parse_args_isolated(&args).expect("args should parse"),
             CliAction::ResumeSession {
                 session_path: PathBuf::from("session.json"),
                 commands: vec!["/compact".to_string()],
@@ -4438,7 +4560,7 @@ mod tests {
             "/cost".to_string(),
         ];
         assert_eq!(
-            parse_args(&args).expect("args should parse"),
+            parse_args_isolated(&args).expect("args should parse"),
             CliAction::ResumeSession {
                 session_path: PathBuf::from("session.json"),
                 commands: vec![
