@@ -22,6 +22,20 @@ const OPENCLAW_RUNTIME_CACHE_RELATIVE_PATH: &str =
     ".openclaw/credentials/github-copilot.token.json";
 const OPENCLAW_AGENT_DIR_RELATIVE_PATH: &str = ".openclaw/agents";
 const TOKEN_REFRESH_BUFFER_MS: u64 = 5 * 60 * 1000;
+const MODEL_AVAILABILITY_CACHE_KEY: &str = "githubCopilotModelAvailability";
+const MODEL_AVAILABILITY_TTL_MS: u64 = 6 * 60 * 60 * 1000;
+const DEFAULT_MODEL_PROBE_IDS: &[&str] = &[
+    "claude-sonnet-4.6",
+    "claude-sonnet-4.5",
+    "gpt-4o",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "o1",
+    "o1-mini",
+    "o3-mini",
+    "gpt-5.4",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GithubCopilotCredentials {
@@ -43,6 +57,15 @@ pub struct ResolvedGithubCopilotAuth {
     pub base_url: String,
     pub expires_at: u64,
     pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubCopilotModelAvailability {
+    pub checked_at: u64,
+    #[serde(default)]
+    pub available: Vec<String>,
+    #[serde(default)]
+    pub unavailable: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -102,6 +125,50 @@ pub fn save_github_token(github_token: &str) -> Result<(), ApiError> {
 
 pub fn clear_github_token() -> Result<(), ApiError> {
     clear_credentials_entry(GITHUB_COPILOT_CREDENTIALS_KEY).map_err(ApiError::from)
+}
+
+pub fn load_cached_model_availability() -> Result<Option<GithubCopilotModelAvailability>, ApiError> {
+    load_credentials_entry::<GithubCopilotModelAvailability>(MODEL_AVAILABILITY_CACHE_KEY)
+        .map_err(ApiError::from)
+}
+
+pub fn cached_model_availability_is_fresh(cache: &GithubCopilotModelAvailability) -> bool {
+    now_ms().saturating_sub(cache.checked_at) <= MODEL_AVAILABILITY_TTL_MS
+}
+
+pub async fn refresh_model_availability() -> Result<GithubCopilotModelAvailability, ApiError> {
+    let auth = resolve_runtime_auth().await?;
+    let client = create_client(auth);
+    let mut available = Vec::new();
+    let mut unavailable = Vec::new();
+
+    for model_id in DEFAULT_MODEL_PROBE_IDS {
+        let request = MessageRequest {
+            model: format!("github-copilot/{model_id}"),
+            max_tokens: 8,
+            messages: vec![crate::types::InputMessage::user_text("reply with exactly: ok")],
+            system: None,
+            tools: None,
+            tool_choice: None,
+            stream: false,
+        };
+
+        match client.send_message(&request).await {
+            Ok(_) => available.push((*model_id).to_string()),
+            Err(ApiError::Api { status, .. }) if status == reqwest::StatusCode::BAD_REQUEST => {
+                unavailable.push((*model_id).to_string());
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    let cache = GithubCopilotModelAvailability {
+        checked_at: now_ms(),
+        available,
+        unavailable,
+    };
+    save_credentials_entry(MODEL_AVAILABILITY_CACHE_KEY, &cache).map_err(ApiError::from)?;
+    Ok(cache)
 }
 
 pub fn load_saved_github_token() -> Result<Option<String>, ApiError> {

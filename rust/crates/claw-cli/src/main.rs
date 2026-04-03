@@ -16,11 +16,12 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use api::{
-    load_saved_github_token, poll_for_github_copilot_access_token,
+    cached_model_availability_is_fresh, load_cached_model_availability, load_saved_github_token,
+    poll_for_github_copilot_access_token, refresh_github_copilot_model_availability,
     request_github_copilot_device_code, save_github_copilot_token, AuthSource, ClawApiClient,
-    ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
-    OutputContentBlock, ProviderClient, StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
-    ToolResultContentBlock,
+    ContentBlockDelta, GithubCopilotModelAvailability, InputContentBlock, InputMessage,
+    MessageRequest, MessageResponse, OutputContentBlock, ProviderClient,
+    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 
 use commands::{
@@ -441,6 +442,27 @@ fn uses_github_copilot_startup_default(model: &str) -> bool {
         })
 }
 
+fn copilot_model_availability_for_report(model: &str) -> Option<GithubCopilotModelAvailability> {
+    if !model.starts_with("github-copilot/") {
+        return None;
+    }
+    match load_cached_model_availability() {
+        Ok(Some(cache)) if cached_model_availability_is_fresh(&cache) => Some(cache),
+        Ok(_) => {
+            let runtime = tokio::runtime::Runtime::new().ok()?;
+            runtime.block_on(refresh_github_copilot_model_availability()).ok()
+        }
+        Err(_) => None,
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 fn normalize_allowed_tools(values: &[String]) -> Result<Option<AllowedToolSet>, String> {
     current_tool_registry()?.normalize_allowed_tools(values)
 }
@@ -634,6 +656,7 @@ fn run_login_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
         remember_startup_default_model(DEFAULT_GITHUB_COPILOT_MODEL)?;
         let runtime = tokio::runtime::Runtime::new()?;
         let resolved = runtime.block_on(api::resolve_github_copilot_runtime_auth())?;
+        let availability = runtime.block_on(refresh_github_copilot_model_availability()).ok();
         let expires_in_minutes = resolved.expires_at.saturating_sub(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -643,6 +666,12 @@ fn run_login_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
         println!("GitHub Copilot credentials already available.");
         println!("Cached Copilot token source: {}", resolved.source);
         println!("Cached Copilot token expires in ~{expires_in_minutes} minutes.");
+        if let Some(availability) = availability {
+            println!(
+                "Detected available Copilot models: {}",
+                availability.available.join(", ")
+            );
+        }
         println!(
             "Future `claw` launches will default to {DEFAULT_GITHUB_COPILOT_MODEL}. Use `--model` or `/model` to override."
         );
@@ -664,6 +693,7 @@ fn run_login_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
     save_github_copilot_token(&github_token)?;
     remember_startup_default_model(DEFAULT_GITHUB_COPILOT_MODEL)?;
     let resolved = runtime.block_on(api::resolve_github_copilot_runtime_auth())?;
+    let availability = runtime.block_on(refresh_github_copilot_model_availability()).ok();
     let expires_in_minutes = resolved.expires_at.saturating_sub(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -674,6 +704,12 @@ fn run_login_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
     println!("GitHub Copilot login complete.");
     println!("Cached Copilot token source: {}", resolved.source);
     println!("Cached Copilot token expires in ~{expires_in_minutes} minutes.");
+    if let Some(availability) = availability {
+        println!(
+            "Detected available Copilot models: {}",
+            availability.available.join(", ")
+        );
+    }
     println!(
         "Future `claw` launches will default to {DEFAULT_GITHUB_COPILOT_MODEL}. Use `--model` or `/model` to override."
     );
@@ -830,8 +866,13 @@ struct StatusUsage {
     estimated_tokens: usize,
 }
 
-fn format_model_report(model: &str, message_count: usize, turns: u32) -> String {
-    format!(
+fn format_model_report(
+    model: &str,
+    message_count: usize,
+    turns: u32,
+    copilot_availability: Option<&GithubCopilotModelAvailability>,
+) -> String {
+    let mut report = format!(
         "Model
   Current          {model}
   Session          {message_count} messages · {turns} turns
@@ -846,7 +887,27 @@ Aliases
 Next
   /model           Show the current model
   /model <name>    Switch models for this REPL session"
-    )
+    );
+    if let Some(cache) = copilot_availability {
+        let available = if cache.available.is_empty() {
+            "(none detected)".to_string()
+        } else {
+            cache.available.join(", ")
+        };
+        let checked_ago_minutes = now_ms().saturating_sub(cache.checked_at) / 60_000;
+        report.push_str(&format!(
+            "\n\nGitHub Copilot
+  Available        {available}
+  Checked          {checked_ago_minutes} minute(s) ago"
+        ));
+        if !cache.unavailable.is_empty() {
+            report.push_str(&format!(
+                "\n  Unavailable      {}",
+                cache.unavailable.join(", ")
+            ));
+        }
+    }
+    report
 }
 
 fn format_model_switch_report(previous: &str, next: &str, message_count: usize) -> String {
@@ -1524,12 +1585,14 @@ impl LiveCli {
 
     fn set_model(&mut self, model: Option<String>) -> Result<bool, Box<dyn std::error::Error>> {
         let Some(model) = model else {
+            let availability = copilot_model_availability_for_report(&self.model);
             println!(
                 "{}",
                 format_model_report(
                     &self.model,
                     self.runtime.session().messages.len(),
                     self.runtime.usage().turns(),
+                    availability.as_ref(),
                 )
             );
             return Ok(false);
@@ -1538,12 +1601,14 @@ impl LiveCli {
         let model = resolve_model_alias(&model).to_string();
 
         if model == self.model {
+            let availability = copilot_model_availability_for_report(&self.model);
             println!(
                 "{}",
                 format_model_report(
                     &self.model,
                     self.runtime.session().messages.len(),
                     self.runtime.usage().turns(),
+                    availability.as_ref(),
                 )
             );
             return Ok(false);
@@ -4743,7 +4808,7 @@ mod tests {
 
     #[test]
     fn model_report_uses_sectioned_layout() {
-        let report = format_model_report("sonnet", 12, 4);
+        let report = format_model_report("sonnet", 12, 4, None);
         assert!(report.contains("Model"));
         assert!(report.contains("Current          sonnet"));
         assert!(report.contains("Session          12 messages · 4 turns"));
