@@ -66,7 +66,7 @@ pub use oauth::{
     loopback_redirect_uri, parse_oauth_callback_query, parse_oauth_callback_request_target,
     save_credentials_entry, save_oauth_credentials, OAuthAuthorizationRequest, OAuthCallbackParams,
     OAuthRefreshRequest, OAuthTokenExchangeRequest, OAuthTokenSet, PkceChallengeMethod,
-    PkceCodePair,
+    PkceCodePair, StartupPreferences,
 };
 pub use permissions::{
     PermissionMode, PermissionOutcome, PermissionPolicy, PermissionPromptDecision,

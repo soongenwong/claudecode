@@ -16,6 +16,7 @@ pub use providers::github_copilot::{
     poll_for_access_token as poll_for_github_copilot_access_token,
     request_device_code as request_github_copilot_device_code,
     refresh_model_availability as refresh_github_copilot_model_availability,
+    resolve_model_availability as resolve_github_copilot_model_availability,
     resolve_runtime_auth as resolve_github_copilot_runtime_auth,
     save_github_token as save_github_copilot_token, GithubCopilotModelAvailability,
     GithubDeviceCodeResponse,

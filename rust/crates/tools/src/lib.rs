@@ -14,7 +14,8 @@ use runtime::{
     edit_file, execute_bash, glob_search, grep_search, load_credentials_entry, load_system_prompt,
     read_file, write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ContentBlock,
     ConversationMessage, ConversationRuntime, GrepSearchInput, MessageRole, PermissionMode,
-    PermissionPolicy, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
+    PermissionPolicy, RuntimeError, Session, StartupPreferences, TokenUsage, ToolError,
+    ToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1512,12 +1513,6 @@ fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
 const DEFAULT_AGENT_MODEL: &str = "claude-opus-4-6";
 const DEFAULT_AGENT_SYSTEM_DATE: &str = "2026-03-31";
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
-
-#[derive(Debug, Clone, Deserialize)]
-struct StartupPreferences {
-    #[serde(default)]
-    default_model: Option<String>,
-}
 
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
     execute_agent_with_spawn(input, spawn_agent_job)
@@ -3133,6 +3128,22 @@ mod tests {
         }
     }
 
+    struct ScopedTempDir {
+        path: PathBuf,
+    }
+
+    impl ScopedTempDir {
+        fn new(path: PathBuf) -> Self {
+            Self { path }
+        }
+    }
+
+    impl Drop for ScopedTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
     fn temp_path(name: &str) -> PathBuf {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3577,8 +3588,10 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-store");
         let config_home = temp_path("agent-config-home");
+        let _dir_guard = ScopedTempDir::new(dir.clone());
+        let _config_home_dir_guard = ScopedTempDir::new(config_home.clone());
         let _agent_store_guard = ScopedEnvVar::set("CLAW_AGENT_STORE", &dir);
-        let _config_home_guard = ScopedEnvVar::set("CLAW_CONFIG_HOME", &config_home);
+        let _config_home_env_guard = ScopedEnvVar::set("CLAW_CONFIG_HOME", &config_home);
         let captured = Arc::new(Mutex::new(None::<AgentJob>));
         let captured_for_spawn = Arc::clone(&captured);
 
@@ -3652,8 +3665,6 @@ mod tests {
         .expect("Agent should normalize explicit names");
         let named_output: serde_json::Value = serde_json::from_str(&named).expect("valid json");
         assert_eq!(named_output["name"], "ship-audit");
-        let _ = std::fs::remove_dir_all(dir);
-        let _ = std::fs::remove_dir_all(config_home);
     }
 
     #[test]

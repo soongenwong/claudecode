@@ -89,6 +89,12 @@ struct StoredOAuthCredentials {
     scopes: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartupPreferences {
+    #[serde(default)]
+    pub default_model: Option<String>,
+}
+
 impl From<OAuthTokenSet> for StoredOAuthCredentials {
     fn from(value: OAuthTokenSet) -> Self {
         Self {

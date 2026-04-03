@@ -136,6 +136,15 @@ pub fn cached_model_availability_is_fresh(cache: &GithubCopilotModelAvailability
     now_ms().saturating_sub(cache.checked_at) <= MODEL_AVAILABILITY_TTL_MS
 }
 
+pub async fn resolve_model_availability() -> Result<GithubCopilotModelAvailability, ApiError> {
+    if let Some(cache) = load_cached_model_availability()? {
+        if cached_model_availability_is_fresh(&cache) {
+            return Ok(cache);
+        }
+    }
+    refresh_model_availability().await
+}
+
 pub async fn refresh_model_availability() -> Result<GithubCopilotModelAvailability, ApiError> {
     let auth = resolve_runtime_auth().await?;
     let client = create_client(auth);

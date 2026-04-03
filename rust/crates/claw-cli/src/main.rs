@@ -16,9 +16,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use api::{
-    cached_model_availability_is_fresh, load_cached_model_availability, load_saved_github_token,
-    poll_for_github_copilot_access_token, refresh_github_copilot_model_availability,
-    request_github_copilot_device_code, resolve_startup_auth_source,
+    load_saved_github_token, poll_for_github_copilot_access_token,
+    request_github_copilot_device_code, resolve_github_copilot_model_availability,
+    resolve_startup_auth_source,
     save_github_copilot_token, AuthSource, ClawApiClient, ContentBlockDelta,
     GithubCopilotModelAvailability, InputContentBlock, InputMessage, MessageRequest,
     MessageResponse, OutputContentBlock, ProviderClient, StreamEvent as ApiStreamEvent,
@@ -40,8 +40,8 @@ use runtime::{
     save_oauth_credentials, ApiClient, ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader,
     ConfigSource, ContentBlock, ConversationMessage, ConversationRuntime, MessageRole,
     OAuthAuthorizationRequest, OAuthConfig, OAuthTokenExchangeRequest, PermissionMode,
-    PermissionPolicy, ProjectContext, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
-    UsageTracker,
+    PermissionPolicy, ProjectContext, RuntimeError, Session, StartupPreferences, TokenUsage,
+    ToolError, ToolExecutor, UsageTracker,
 };
 use serde_json::json;
 use tools::GlobalToolRegistry;
@@ -59,12 +59,6 @@ const GIT_SHA: Option<&str> = option_env!("GIT_SHA");
 const INTERNAL_PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
 
 type AllowedToolSet = BTreeSet<String>;
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct StartupPreferences {
-    #[serde(default)]
-    default_model: Option<String>,
-}
 
 fn main() {
     if let Err(error) = run() {
@@ -183,6 +177,13 @@ impl CliOutputFormat {
 
 #[allow(clippy::too_many_lines)]
 fn parse_args(args: &[String]) -> Result<CliAction, String> {
+    if args.iter().any(|arg| matches!(arg.as_str(), "--version" | "-V")) {
+        return Ok(CliAction::Version);
+    }
+    if matches!(args.first().map(String::as_str), Some("--help" | "-h")) {
+        return Ok(CliAction::Help);
+    }
+
     let mut model = resolve_startup_default_model();
     let mut output_format = CliOutputFormat::Text;
     let mut permission_mode = default_permission_mode();
@@ -443,14 +444,8 @@ fn copilot_model_availability_for_report(model: &str) -> Option<GithubCopilotMod
     if !model.starts_with("github-copilot/") {
         return None;
     }
-    match load_cached_model_availability() {
-        Ok(Some(cache)) if cached_model_availability_is_fresh(&cache) => Some(cache),
-        Ok(_) => {
-            let runtime = tokio::runtime::Runtime::new().ok()?;
-            runtime.block_on(refresh_github_copilot_model_availability()).ok()
-        }
-        Err(_) => None,
-    }
+    let runtime = tokio::runtime::Runtime::new().ok()?;
+    runtime.block_on(resolve_github_copilot_model_availability()).ok()
 }
 
 fn now_ms() -> u64 {
@@ -653,7 +648,7 @@ fn run_login_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
         remember_startup_default_model(DEFAULT_GITHUB_COPILOT_MODEL)?;
         let runtime = tokio::runtime::Runtime::new()?;
         let resolved = runtime.block_on(api::resolve_github_copilot_runtime_auth())?;
-        let availability = runtime.block_on(refresh_github_copilot_model_availability()).ok();
+        let availability = runtime.block_on(resolve_github_copilot_model_availability()).ok();
         let expires_in_minutes = resolved.expires_at.saturating_sub(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -690,7 +685,7 @@ fn run_login_github_copilot() -> Result<(), Box<dyn std::error::Error>> {
     save_github_copilot_token(&github_token)?;
     remember_startup_default_model(DEFAULT_GITHUB_COPILOT_MODEL)?;
     let resolved = runtime.block_on(api::resolve_github_copilot_runtime_auth())?;
-    let availability = runtime.block_on(refresh_github_copilot_model_availability()).ok();
+    let availability = runtime.block_on(resolve_github_copilot_model_availability()).ok();
     let expires_in_minutes = resolved.expires_at.saturating_sub(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -4393,6 +4388,22 @@ mod tests {
         }
     }
 
+    struct ScopedTempDir {
+        path: std::path::PathBuf,
+    }
+
+    impl ScopedTempDir {
+        fn new(path: std::path::PathBuf) -> Self {
+            Self { path }
+        }
+    }
+
+    impl Drop for ScopedTempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
     fn with_clean_config_home<T>(f: impl FnOnce() -> T) -> T {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let _lock = LOCK
@@ -4408,10 +4419,9 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&config_home).expect("temp config home should be created");
+        let _dir_guard = ScopedTempDir::new(config_home.clone());
         let _env_guard = ScopedEnvVar::set("CLAW_CONFIG_HOME", &config_home);
-        let result = f();
-        let _ = fs::remove_dir_all(config_home);
-        result
+        f()
     }
 
     fn parse_args_isolated(args: &[String]) -> Result<CliAction, String> {
