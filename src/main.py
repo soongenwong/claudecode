@@ -19,7 +19,7 @@ from .tools import execute_tool, get_tool, get_tools, render_tool_index
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description='Python porting workspace for the Claw Code rewrite effort')
+    parser = argparse.ArgumentParser(description='Python porting workspace for the Clues Code rewrite effort')
     subparsers = parser.add_subparsers(dest='command', required=True)
     subparsers.add_parser('summary', help='render a Markdown summary of the Python porting workspace')
     subparsers.add_parser('manifest', help='print the current Python workspace manifest')

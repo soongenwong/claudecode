@@ -1,5 +1,5 @@
 {
-  "archive_root": "archive/claw_code_ts_snapshot/src",
+  "archive_root": "archive/clues_code_ts_snapshot/src",
   "root_files": [
     "QueryEngine.ts",
     "Task.ts",

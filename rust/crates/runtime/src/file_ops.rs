@@ -488,7 +488,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time should move forward")
             .as_nanos();
-        std::env::temp_dir().join(format!("claw-native-{name}-{unique}"))
+        std::env::temp_dir().join(format!("clues-native-{name}-{unique}"))
     }
 
     #[test]

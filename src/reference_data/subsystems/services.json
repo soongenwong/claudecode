@@ -22,7 +22,7 @@
     "services/analytics/sinkKillswitch.ts",
     "services/api/adminRequests.ts",
     "services/api/bootstrap.ts",
-    "services/api/claw.ts",
+    "services/api/clues.ts",
     "services/api/client.ts",
     "services/api/dumpPrompts.ts",
     "services/api/emptyUsage.ts",

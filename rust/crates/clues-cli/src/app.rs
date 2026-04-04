@@ -112,7 +112,7 @@ impl CliApp {
 
     pub fn run_repl(&mut self) -> io::Result<()> {
         let mut editor = LineEditor::new("› ", Vec::new());
-        println!("Claw Code interactive mode");
+        println!("Clues Code interactive mode");
         println!("Type /help for commands. Shift+Enter or Ctrl+J inserts a newline.");
 
         loop {

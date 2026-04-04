@@ -1,6 +1,6 @@
-# CLAW.md
+# CLUES.md
 
-This file provides guidance to Claw Code when working with code in this repository.
+This file provides guidance to Clues Code when working with code in this repository.
 
 ## Detected stack
 - Languages: Rust.
@@ -17,5 +17,5 @@ This file provides guidance to Claw Code when working with code in this reposito
 
 ## Working agreement
 - Prefer small, reviewable changes and keep generated bootstrap files aligned with actual repo workflows.
-- Keep shared defaults in `.claw.json`; reserve `.claw/settings.local.json` for machine-local overrides.
-- Do not overwrite existing `CLAW.md` content automatically; update it intentionally when repo workflows change.
+- Keep shared defaults in the generated project settings file and reserve machine-local overrides for the generated local settings file.
+- Do not overwrite existing `CLUES.md` content automatically; update it intentionally when repo workflows change.

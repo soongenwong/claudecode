@@ -16,8 +16,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use api::{
-    resolve_startup_auth_source, AuthSource, ClawApiClient, ContentBlockDelta, InputContentBlock,
-    InputMessage, MessageRequest, MessageResponse, OutputContentBlock,
+    max_tokens_for_model as api_max_tokens_for_model, resolve_model_alias as api_resolve_model_alias,
+    ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
+    OAuthHttpClient, OutputContentBlock, ProviderClient,
     StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 
@@ -31,23 +32,54 @@ use init::initialize_repo;
 use plugins::{PluginManager, PluginManagerConfig};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use runtime::{
-    clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
-    parse_oauth_callback_request_target, save_oauth_credentials, ApiClient, ApiRequest,
-    AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
+    clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt, ApiClient,
+    ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
     ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest, OAuthConfig,
     OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, RuntimeError,
     Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    parse_oauth_callback_request_target, save_oauth_credentials,
 };
 use serde_json::json;
 use tools::GlobalToolRegistry;
 
-const DEFAULT_MODEL: &str = "claude-opus-4-6";
-fn max_tokens_for_model(model: &str) -> u32 {
-    if model.contains("opus") {
-        32_000
-    } else {
-        64_000
+const DEFAULT_MODEL: &str = "Qwen/Qwen3-Coder-Next:fastest";
+const PRODUCT_NAME: &str = "Clues Code";
+
+fn env_non_empty(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn configured_default_model() -> Option<String> {
+    env_non_empty("CLUES_MODEL")
+        .map(|model| resolve_model_alias(&model))
+        .or_else(|| {
+            let cwd = env::current_dir().ok()?;
+            let config = ConfigLoader::default_for(&cwd).load().ok()?;
+            config.model().map(resolve_model_alias)
+        })
+}
+
+fn default_model() -> String {
+    if cfg!(test) {
+        return DEFAULT_MODEL.to_string();
     }
+    configured_default_model()
+        .or_else(|| {
+            env_non_empty("HF_TOKEN")
+                .or_else(|| env_non_empty("HUGGINGFACE_API_KEY"))
+                .map(|_| resolve_model_alias("hf"))
+        })
+        .or_else(|| env_non_empty("OPENROUTER_API_KEY").map(|_| resolve_model_alias("fast")))
+        .or_else(|| env_non_empty("GITHUB_TOKEN").map(|_| resolve_model_alias("github")))
+        .or_else(|| env_non_empty("XAI_API_KEY").map(|_| resolve_model_alias("grok")))
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+}
+
+fn max_tokens_for_model(model: &str) -> u32 {
+    api_max_tokens_for_model(model)
 }
 const DEFAULT_DATE: &str = "2026-03-31";
 const DEFAULT_OAUTH_CALLBACK_PORT: u16 = 4545;
@@ -75,7 +107,7 @@ fn render_cli_error(problem: &str) -> String {
         };
         lines.push(format!("{label}{line}"));
     }
-    lines.push("  Help             claw --help".to_string());
+    lines.push("  Help             clues --help".to_string());
     lines.join("\n")
 }
 
@@ -171,7 +203,7 @@ impl CliOutputFormat {
 
 #[allow(clippy::too_many_lines)]
 fn parse_args(args: &[String]) -> Result<CliAction, String> {
-    let mut model = DEFAULT_MODEL.to_string();
+    let mut model = default_model();
     let mut output_format = CliOutputFormat::Text;
     let mut permission_mode = default_permission_mode();
     let mut wants_version = false;
@@ -223,7 +255,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 index += 1;
             }
             "-p" => {
-                // Claw Code compat: -p "prompt" = one-shot prompt
+                // Legacy CLI compat: -p "prompt" = one-shot prompt
                 let prompt = args[index + 1..].join(" ");
                 if prompt.trim().is_empty() {
                     return Err("-p requires a prompt string".to_string());
@@ -237,7 +269,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 });
             }
             "--print" => {
-                // Claw Code compat: --print makes output non-interactive
+                // Legacy CLI compat: --print makes output non-interactive
                 output_format = CliOutputFormat::Text;
                 index += 1;
             }
@@ -353,25 +385,23 @@ fn format_direct_slash_command_error(command: &str, is_unknown: bool) -> String 
     if is_unknown {
         append_slash_command_suggestions(&mut lines, trimmed);
     } else {
-        lines.push("  Try              Start `claw` to use interactive slash commands".to_string());
+        lines.push("  Try              Start `clues` to use interactive slash commands".to_string());
         lines.push(
-            "  Tip              Resume-safe commands also work with `claw --resume SESSION.json ...`"
+            "  Tip              Resume-safe commands also work with `clues --resume SESSION.json ...`"
                 .to_string(),
         );
     }
     lines.join("\n")
 }
 
-fn resolve_model_alias(model: &str) -> &str {
-    match model {
-        "opus" => "claude-opus-4-6",
-        "sonnet" => "claude-sonnet-4-6",
-        "haiku" => "claude-haiku-4-5-20251213",
-        _ => model,
-    }
+fn resolve_model_alias(model: &str) -> String {
+    api_resolve_model_alias(model)
 }
 
 fn normalize_allowed_tools(values: &[String]) -> Result<Option<AllowedToolSet>, String> {
+    if values.is_empty() {
+        return Ok(None);
+    }
     current_tool_registry()?.normalize_allowed_tools(values)
 }
 
@@ -406,7 +436,7 @@ fn permission_mode_from_label(mode: &str) -> PermissionMode {
 }
 
 fn default_permission_mode() -> PermissionMode {
-    env::var("CLAW_PERMISSION_MODE")
+    env::var("CLUES_PERMISSION_MODE")
         .ok()
         .as_deref()
         .and_then(normalize_permission_mode)
@@ -483,40 +513,65 @@ fn dump_manifests() {
 }
 
 fn print_bootstrap_plan() {
-    for phase in runtime::BootstrapPlan::claw_default().phases() {
+    for phase in runtime::BootstrapPlan::clues_default().phases() {
         println!("- {phase:?}");
     }
 }
 
-fn default_oauth_config() -> OAuthConfig {
-    OAuthConfig {
-        client_id: String::from("9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
-        authorize_url: String::from("https://platform.claw.dev/oauth/authorize"),
-        token_url: String::from("https://platform.claw.dev/v1/oauth/token"),
-        callback_port: None,
-        manual_redirect_url: None,
-        scopes: vec![
-            String::from("user:profile"),
-            String::from("user:inference"),
-            String::from("user:sessions:claw_code"),
-        ],
-    }
+fn default_oauth_config() -> Option<OAuthConfig> {
+    let client_id = env_non_empty("CLUES_OAUTH_CLIENT_ID")?;
+    let authorize_url = env_non_empty("CLUES_OAUTH_AUTHORIZE_URL")?;
+    let token_url = env_non_empty("CLUES_OAUTH_TOKEN_URL")?;
+    let scopes = env_non_empty("CLUES_OAUTH_SCOPES")
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|scopes| !scopes.is_empty())
+        .unwrap_or_else(|| {
+            vec![
+                String::from("user:profile"),
+                String::from("user:inference"),
+                String::from("user:sessions:clues_code"),
+            ]
+        });
+    let callback_port = env_non_empty("CLUES_OAUTH_CALLBACK_PORT")
+        .and_then(|value| value.parse::<u16>().ok());
+    Some(OAuthConfig {
+        client_id,
+        authorize_url,
+        token_url,
+        callback_port,
+        manual_redirect_url: env_non_empty("CLUES_OAUTH_MANUAL_REDIRECT_URL"),
+        scopes,
+    })
 }
 
 fn run_login() -> Result<(), Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     let config = ConfigLoader::default_for(&cwd).load()?;
-    let default_oauth = default_oauth_config();
-    let oauth = config.oauth().unwrap_or(&default_oauth);
+    let oauth = config
+        .oauth()
+        .cloned()
+        .or_else(default_oauth_config)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "OAuth login requires `oauth` settings in .clues.json or CLUES_OAUTH_* environment variables",
+            )
+        })?;
     let callback_port = oauth.callback_port.unwrap_or(DEFAULT_OAUTH_CALLBACK_PORT);
     let redirect_uri = runtime::loopback_redirect_uri(callback_port);
     let pkce = generate_pkce_pair()?;
     let state = generate_state()?;
     let authorize_url =
-        OAuthAuthorizationRequest::from_config(oauth, redirect_uri.clone(), state.clone(), &pkce)
+        OAuthAuthorizationRequest::from_config(&oauth, redirect_uri.clone(), state.clone(), &pkce)
             .build_url();
 
-    println!("Starting Claw OAuth login...");
+    println!("Starting {PRODUCT_NAME} OAuth login...");
     println!("Listening for callback on {redirect_uri}");
     if let Err(error) = open_browser(&authorize_url) {
         eprintln!("warning: failed to open browser automatically: {error}");
@@ -540,24 +595,19 @@ fn run_login() -> Result<(), Box<dyn std::error::Error>> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "oauth state mismatch").into());
     }
 
-    let client = ClawApiClient::from_auth(AuthSource::None).with_base_url(api::read_base_url());
     let exchange_request =
-        OAuthTokenExchangeRequest::from_config(oauth, code, state, pkce.verifier, redirect_uri);
+        OAuthTokenExchangeRequest::from_config(&oauth, code, state, pkce.verifier, redirect_uri);
     let runtime = tokio::runtime::Runtime::new()?;
-    let token_set = runtime.block_on(client.exchange_oauth_code(oauth, &exchange_request))?;
-    save_oauth_credentials(&runtime::OAuthTokenSet {
-        access_token: token_set.access_token,
-        refresh_token: token_set.refresh_token,
-        expires_at: token_set.expires_at,
-        scopes: token_set.scopes,
-    })?;
-    println!("Claw OAuth login complete.");
+    let token_set =
+        runtime.block_on(OAuthHttpClient::new().exchange_oauth_code(&oauth, &exchange_request))?;
+    save_oauth_credentials(&token_set)?;
+    println!("{PRODUCT_NAME} OAuth login complete.");
     Ok(())
 }
 
 fn run_logout() -> Result<(), Box<dyn std::error::Error>> {
     clear_oauth_credentials()?;
-    println!("Claw OAuth credentials cleared.");
+    println!("{PRODUCT_NAME} OAuth credentials cleared.");
     Ok(())
 }
 
@@ -602,9 +652,9 @@ fn wait_for_oauth_callback(
     let callback = parse_oauth_callback_request_target(target)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let body = if callback.error.is_some() {
-        "Claw OAuth login failed. You can close this window."
+        "Clues Code OAuth login failed. You can close this window."
     } else {
-        "Claw OAuth login succeeded. You can close this window."
+        "Clues Code OAuth login succeeded. You can close this window."
     };
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -704,9 +754,10 @@ fn format_model_report(model: &str, message_count: usize, turns: u32) -> String 
   Session          {message_count} messages · {turns} turns
 
 Aliases
-  opus             claude-opus-4-6
-  sonnet           claude-sonnet-4-6
-  haiku            claude-haiku-4-5-20251213
+  fast             openrouter/auto
+  code             Qwen/Qwen3-Coder-Next:fastest
+  reasoner         deepseek-ai/DeepSeek-R1:fastest
+  github           openai/gpt-4o-mini
 
 Next
   /model           Show the current model
@@ -948,7 +999,7 @@ fn run_resume_command(
         }),
         SlashCommand::Init => Ok(ResumeCommandOutcome {
             session: session.clone(),
-            message: Some(init_claw_md()?),
+            message: Some(init_clues_md()?),
         }),
         SlashCommand::Diff => Ok(ResumeCommandOutcome {
             session: session.clone(),
@@ -1116,16 +1167,14 @@ impl LiveCli {
             || workspace_name.to_string(),
             |branch| format!("{workspace_name} · {branch}"),
         );
-        let has_claw_md = cwd
-            .as_ref()
-            .is_some_and(|path| path.join("CLAW.md").is_file());
+        let has_clues_md = cwd.as_ref().is_some_and(|path| path.join("CLUES.md").is_file());
         let mut lines = vec![
             format!(
                 "{} {}",
                 if color {
-                    "\x1b[1;38;5;45m🦞 Claw Code\x1b[0m"
+                    "\x1b[1;38;5;45m🧭 Clues Code\x1b[0m"
                 } else {
-                    "Claw Code"
+                    PRODUCT_NAME
                 },
                 if color {
                     "\x1b[2m· ready\x1b[0m"
@@ -1140,7 +1189,7 @@ impl LiveCli {
             format!("  Session          {}", self.session.id),
             format!(
                 "  Quick start      {}",
-                if has_claw_md {
+                if has_clues_md {
                     "/help · /status · ask for a task"
                 } else {
                     "/init · /help · /status"
@@ -1150,9 +1199,9 @@ impl LiveCli {
                 .to_string(),
             "  Multiline        Shift+Enter or Ctrl+J inserts a newline".to_string(),
         ];
-        if !has_claw_md {
+        if !has_clues_md {
             lines.push(
-                "  First run        /init scaffolds CLAW.md, .claw.json, and local session files"
+                "  First run        /init scaffolds CLUES.md, .clues.json, and local session files"
                     .to_string(),
             );
         }
@@ -1773,7 +1822,7 @@ impl LiveCli {
             return Err("generated commit message was empty".into());
         }
 
-        let path = write_temp_text_file("claw-commit-message.txt", &message)?;
+        let path = write_temp_text_file("clues-commit-message.txt", &message)?;
         let output = Command::new("git")
             .args(["commit", "--file"])
             .arg(&path)
@@ -1804,7 +1853,7 @@ impl LiveCli {
             .ok_or_else(|| "failed to parse generated PR title/body".to_string())?;
 
         if command_exists("gh") {
-            let body_path = write_temp_text_file("claw-pr-body.md", &body)?;
+            let body_path = write_temp_text_file("clues-pr-body.md", &body)?;
             let output = Command::new("gh")
                 .args(["pr", "create", "--title", &title, "--body-file"])
                 .arg(&body_path)
@@ -1835,7 +1884,7 @@ impl LiveCli {
             .ok_or_else(|| "failed to parse generated issue title/body".to_string())?;
 
         if command_exists("gh") {
-            let body_path = write_temp_text_file("claw-issue-body.md", &body)?;
+            let body_path = write_temp_text_file("clues-issue-body.md", &body)?;
             let output = Command::new("gh")
                 .args(["issue", "create", "--title", &title, "--body-file"])
                 .arg(&body_path)
@@ -1858,9 +1907,50 @@ impl LiveCli {
 
 fn sessions_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    let path = cwd.join(".claw").join("sessions");
-    fs::create_dir_all(&path)?;
-    Ok(path)
+    let workspace_sessions = cwd.join(".clues").join("sessions");
+    let clues_config_sessions = env::var_os("CLUES_CONFIG_HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("sessions"));
+    let local_appdata_sessions = env::var_os("LOCALAPPDATA")
+        .map(|path| PathBuf::from(path).join("CluesCode").join("sessions"));
+    let home_clues_sessions = env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".clues-code").join("sessions"));
+    let temp_sessions = env::temp_dir().join("clues").join("sessions");
+
+    let mut candidates = Vec::new();
+    for candidate in [
+        clues_config_sessions,
+        local_appdata_sessions,
+        home_clues_sessions,
+        Some(workspace_sessions),
+        Some(temp_sessions),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+
+    let mut last_error = None;
+    for path in candidates {
+        match fs::create_dir_all(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) => last_error = Some((path, error)),
+        }
+    }
+
+    if let Some((path, error)) = last_error {
+        return Err(format!(
+            "failed to create session directory at {}: {}",
+            path.display(),
+            error
+        )
+        .into());
+    }
+
+    Err("failed to resolve a session directory".into())
 }
 
 fn create_managed_session_handle() -> Result<SessionHandle, Box<dyn std::error::Error>> {
@@ -2220,7 +2310,7 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
     if project_context.instruction_files.is_empty() {
         lines.push("Discovered files".to_string());
         lines.push(
-            "  No CLAW instruction files discovered in the current directory ancestry.".to_string(),
+            "  No instruction files discovered in the current directory ancestry.".to_string(),
         );
     } else {
         lines.push("Discovered files".to_string());
@@ -2245,13 +2335,13 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
     ))
 }
 
-fn init_claw_md() -> Result<String, Box<dyn std::error::Error>> {
+fn init_clues_md() -> Result<String, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     Ok(initialize_repo(&cwd)?.render())
 }
 
 fn run_init() -> Result<(), Box<dyn std::error::Error>> {
-    println!("{}", init_claw_md()?);
+    println!("{}", init_clues_md()?);
     Ok(())
 }
 
@@ -2487,7 +2577,7 @@ fn render_version_report() -> String {
     let git_sha = GIT_SHA.unwrap_or("unknown");
     let target = BUILD_TARGET.unwrap_or("unknown");
     format!(
-        "Claw Code\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {DEFAULT_DATE}\n\nSupport\n  Help             claw --help\n  REPL             /help"
+        "{PRODUCT_NAME}\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {DEFAULT_DATE}\n\nSupport\n  Help             clues --help\n  REPL             /help"
     )
 }
 
@@ -2603,7 +2693,8 @@ fn build_plugin_manager(
     runtime_config: &runtime::RuntimeConfig,
 ) -> PluginManager {
     let plugin_settings = runtime_config.plugins();
-    let mut plugin_config = PluginManagerConfig::new(loader.config_home().to_path_buf());
+    let mut plugin_config =
+        PluginManagerConfig::new(resolve_writable_config_home(loader.config_home()));
     plugin_config.enabled_plugins = plugin_settings.enabled_plugins().clone();
     plugin_config.external_dirs = plugin_settings
         .external_directories()
@@ -2620,6 +2711,41 @@ fn build_plugin_manager(
         .bundled_root()
         .map(|path| resolve_plugin_path(cwd, loader.config_home(), path));
     PluginManager::new(plugin_config)
+}
+
+fn resolve_writable_config_home(preferred: &Path) -> PathBuf {
+    let mut candidates = vec![preferred.to_path_buf()];
+    if let Some(user_profile) = env::var_os("USERPROFILE") {
+        let home_candidate = PathBuf::from(user_profile).join(".clues-code");
+        if !candidates.contains(&home_candidate) {
+            candidates.push(home_candidate);
+        }
+    }
+    let temp_candidate = env::temp_dir().join("clues");
+    if !candidates.contains(&temp_candidate) {
+        candidates.push(temp_candidate);
+    }
+
+    for candidate in &candidates {
+        if config_home_is_writable(candidate) {
+            return candidate.clone();
+        }
+    }
+
+    preferred.to_path_buf()
+}
+
+fn config_home_is_writable(path: &Path) -> bool {
+    if fs::create_dir_all(path).is_err() {
+        return false;
+    }
+
+    let probe = path.join("clues-write-probe.tmp");
+    if fs::write(&probe, b"ok").is_err() {
+        return false;
+    }
+    let _ = fs::remove_file(&probe);
+    true
 }
 
 fn resolve_plugin_path(cwd: &Path, config_home: &Path, value: &str) -> PathBuf {
@@ -2974,17 +3100,20 @@ fn build_runtime(
     progress_reporter: Option<InternalPromptProgressReporter>,
 ) -> Result<ConversationRuntime<DefaultRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
 {
-    let (feature_config, tool_registry) = build_runtime_plugin_state()?;
+    let (feature_config, tool_registry) = build_runtime_plugin_state()
+        .map_err(|error| format!("failed to build runtime plugin state: {error}"))?;
+    let runtime_client = DefaultRuntimeClient::new(
+        model,
+        enable_tools,
+        emit_output,
+        allowed_tools.clone(),
+        tool_registry.clone(),
+        progress_reporter,
+    )
+    .map_err(|error| format!("failed to construct runtime client: {error}"))?;
     Ok(ConversationRuntime::new_with_features(
         session,
-        DefaultRuntimeClient::new(
-            model,
-            enable_tools,
-            emit_output,
-            allowed_tools.clone(),
-            tool_registry.clone(),
-            progress_reporter,
-        )?,
+        runtime_client,
         CliToolExecutor::new(allowed_tools.clone(), emit_output, tool_registry.clone()),
         permission_policy(permission_mode, &tool_registry),
         system_prompt,
@@ -3040,7 +3169,7 @@ impl runtime::PermissionPrompter for CliPermissionPrompter {
 
 struct DefaultRuntimeClient {
     runtime: tokio::runtime::Runtime,
-    client: ClawApiClient,
+    client: ProviderClient,
     model: String,
     enable_tools: bool,
     emit_output: bool,
@@ -3058,10 +3187,12 @@ impl DefaultRuntimeClient {
         tool_registry: GlobalToolRegistry,
         progress_reporter: Option<InternalPromptProgressReporter>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let client = ProviderClient::from_model(&model)?;
+
         Ok(Self {
-            runtime: tokio::runtime::Runtime::new()?,
-            client: ClawApiClient::from_auth(resolve_cli_auth_source()?)
-                .with_base_url(api::read_base_url()),
+            runtime: tokio::runtime::Runtime::new()
+                .map_err(|error| format!("failed to create tokio runtime: {error}"))?,
+            client,
             model,
             enable_tools,
             emit_output,
@@ -3070,16 +3201,6 @@ impl DefaultRuntimeClient {
             progress_reporter,
         })
     }
-}
-
-fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
-    Ok(resolve_startup_auth_source(|| {
-        let cwd = env::current_dir().map_err(api::ApiError::from)?;
-        let config = ConfigLoader::default_for(&cwd).load().map_err(|error| {
-            api::ApiError::Auth(format!("failed to load runtime OAuth config: {error}"))
-        })?;
-        Ok(config.oauth().cloned())
-    })?)
 }
 
 impl ApiClient for DefaultRuntimeClient {
@@ -3957,7 +4078,7 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
 }
 
 fn print_help_to(out: &mut impl Write) -> io::Result<()> {
-    writeln!(out, "Claw Code CLI v{VERSION}")?;
+    writeln!(out, "{PRODUCT_NAME} CLI v{VERSION}")?;
     writeln!(
         out,
         "  Interactive coding assistant for the current workspace."
@@ -3966,19 +4087,19 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "Quick start")?;
     writeln!(
         out,
-        "  claw                                  Start the interactive REPL"
+        "  clues                                 Start the interactive REPL"
     )?;
     writeln!(
         out,
-        "  claw \"summarize this repo\"            Run one prompt and exit"
+        "  clues \"summarize this repo\"           Run one prompt and exit"
     )?;
     writeln!(
         out,
-        "  claw prompt \"explain src/main.rs\"     Explicit one-shot prompt"
+        "  clues prompt \"explain src/main.rs\"    Explicit one-shot prompt"
     )?;
     writeln!(
         out,
-        "  claw --resume SESSION.json /status    Inspect a saved session"
+        "  clues --resume SESSION.json /status   Inspect a saved session"
     )?;
     writeln!(out)?;
     writeln!(out, "Interactive essentials")?;
@@ -4014,32 +4135,32 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "Commands")?;
     writeln!(
         out,
-        "  claw dump-manifests                   Read upstream TS sources and print extracted counts"
+        "  clues dump-manifests                  Read upstream TS sources and print extracted counts"
     )?;
     writeln!(
         out,
-        "  claw bootstrap-plan                   Print the bootstrap phase skeleton"
+        "  clues bootstrap-plan                  Print the bootstrap phase skeleton"
     )?;
     writeln!(
         out,
-        "  claw agents                           List configured agents"
+        "  clues agents                          List configured agents"
     )?;
     writeln!(
         out,
-        "  claw skills                           List installed skills"
+        "  clues skills                          List installed skills"
     )?;
-    writeln!(out, "  claw system-prompt [--cwd PATH] [--date YYYY-MM-DD]")?;
+    writeln!(out, "  clues system-prompt [--cwd PATH] [--date YYYY-MM-DD]")?;
     writeln!(
         out,
-        "  claw login                            Start the OAuth login flow"
-    )?;
-    writeln!(
-        out,
-        "  claw logout                           Clear saved OAuth credentials"
+        "  clues login                           Start the optional custom OAuth flow from .clues.json"
     )?;
     writeln!(
         out,
-        "  claw init                             Scaffold CLAW.md + local files"
+        "  clues logout                          Clear saved OAuth credentials"
+    )?;
+    writeln!(
+        out,
+        "  clues init                            Scaffold CLUES.md + local files"
     )?;
     writeln!(out)?;
     writeln!(out, "Flags")?;
@@ -4068,6 +4189,32 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         "  --version, -V                         Print version and build information"
     )?;
     writeln!(out)?;
+    writeln!(out, "Providers")?;
+    writeln!(
+        out,
+        "  GITHUB_TOKEN + GITHUB_MODELS_BASE_URL   GitHub Models (example: --model github)"
+    )?;
+    writeln!(
+        out,
+        "  OPENROUTER_API_KEY + OPENROUTER_BASE_URL OpenRouter"
+    )?;
+    writeln!(
+        out,
+        "  HF_TOKEN/HUGGINGFACE_API_KEY + HUGGINGFACE_BASE_URL Hugging Face router"
+    )?;
+    writeln!(
+        out,
+        "  OPENAI_API_KEY + OPENAI_BASE_URL        Generic OpenAI-compatible gateways"
+    )?;
+    writeln!(
+        out,
+        "  XAI_API_KEY + XAI_BASE_URL              xAI / Grok models"
+    )?;
+    writeln!(
+        out,
+        "  Custom OAuth settings in .clues.json   Optional only for self-hosted custom deployments"
+    )?;
+    writeln!(out)?;
     writeln!(out, "Slash command reference")?;
     writeln!(out, "{}", render_slash_command_help())?;
     writeln!(out)?;
@@ -4081,23 +4228,38 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         .join(", ");
     writeln!(out, "Resume-safe commands: {resume_commands}")?;
     writeln!(out, "Examples")?;
-    writeln!(out, "  claw --model opus \"summarize this repo\"")?;
+    writeln!(out, "  clues --model code \"summarize this repo\"")?;
     writeln!(
         out,
-        "  claw --output-format json prompt \"explain src/main.rs\""
+        "  clues --model reasoner \"plan the next refactor\""
     )?;
     writeln!(
         out,
-        "  claw --allowedTools read,glob \"summarize Cargo.toml\""
+        "  clues --model fast \"review the latest changes\""
     )?;
     writeln!(
         out,
-        "  claw --resume session.json /status /diff /export notes.txt"
+        "  clues --model github \"compare this diff to the last commit\""
     )?;
-    writeln!(out, "  claw agents")?;
-    writeln!(out, "  claw /skills")?;
-    writeln!(out, "  claw login")?;
-    writeln!(out, "  claw init")?;
+    writeln!(
+        out,
+        "  clues --model openrouter/auto \"use the provider router alias\""
+    )?;
+    writeln!(
+        out,
+        "  clues --output-format json prompt \"explain src/main.rs\""
+    )?;
+    writeln!(
+        out,
+        "  clues --allowedTools read,glob \"summarize Cargo.toml\""
+    )?;
+    writeln!(
+        out,
+        "  clues --resume session.json /status /diff /export notes.txt"
+    )?;
+    writeln!(out, "  clues agents")?;
+    writeln!(out, "  clues /skills")?;
+    writeln!(out, "  clues init")?;
     Ok(())
 }
 
@@ -4187,7 +4349,7 @@ mod tests {
         let args = vec![
             "--output-format=json".to_string(),
             "--model".to_string(),
-            "custom-opus".to_string(),
+            "custom-coder".to_string(),
             "explain".to_string(),
             "this".to_string(),
         ];
@@ -4195,7 +4357,7 @@ mod tests {
             parse_args(&args).expect("args should parse"),
             CliAction::Prompt {
                 prompt: "explain this".to_string(),
-                model: "custom-opus".to_string(),
+                model: "custom-coder".to_string(),
                 output_format: CliOutputFormat::Json,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
@@ -4207,7 +4369,7 @@ mod tests {
     fn resolves_model_aliases_in_args() {
         let args = vec![
             "--model".to_string(),
-            "opus".to_string(),
+            "code".to_string(),
             "explain".to_string(),
             "this".to_string(),
         ];
@@ -4215,7 +4377,7 @@ mod tests {
             parse_args(&args).expect("args should parse"),
             CliAction::Prompt {
                 prompt: "explain this".to_string(),
-                model: "claude-opus-4-6".to_string(),
+                model: "Qwen/Qwen3-Coder-Next:fastest".to_string(),
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
@@ -4225,10 +4387,11 @@ mod tests {
 
     #[test]
     fn resolves_known_model_aliases() {
-        assert_eq!(resolve_model_alias("opus"), "claude-opus-4-6");
-        assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6");
-        assert_eq!(resolve_model_alias("haiku"), "claude-haiku-4-5-20251213");
-        assert_eq!(resolve_model_alias("custom-opus"), "custom-opus");
+        assert_eq!(resolve_model_alias("fast"), "openrouter/auto");
+        assert_eq!(resolve_model_alias("code"), "Qwen/Qwen3-Coder-Next:fastest");
+        assert_eq!(resolve_model_alias("reasoner"), "deepseek-ai/DeepSeek-R1:fastest");
+        assert_eq!(resolve_model_alias("github"), "openai/gpt-4o-mini");
+        assert_eq!(resolve_model_alias("custom-coder"), "custom-coder");
     }
 
     #[test]
@@ -4432,7 +4595,7 @@ mod tests {
         let help = commands::render_slash_command_help();
         assert!(help.contains("Slash commands"));
         assert!(help.contains("Tab completes commands inside the REPL."));
-        assert!(help.contains("available via claw --resume SESSION.json"));
+        assert!(help.contains("available via clues --resume SESSION.json"));
     }
 
     #[test]
@@ -4558,17 +4721,17 @@ mod tests {
         let mut help = Vec::new();
         print_help_to(&mut help).expect("help should render");
         let help = String::from_utf8(help).expect("help should be utf8");
-        assert!(help.contains("claw init"));
-        assert!(help.contains("claw agents"));
-        assert!(help.contains("claw skills"));
-        assert!(help.contains("claw /skills"));
+        assert!(help.contains("clues init"));
+        assert!(help.contains("clues agents"));
+        assert!(help.contains("clues skills"));
+        assert!(help.contains("clues /skills"));
     }
 
     #[test]
     fn model_report_uses_sectioned_layout() {
-        let report = format_model_report("sonnet", 12, 4);
+        let report = format_model_report("code", 12, 4);
         assert!(report.contains("Model"));
-        assert!(report.contains("Current          sonnet"));
+        assert!(report.contains("Current          code"));
         assert!(report.contains("Session          12 messages · 4 turns"));
         assert!(report.contains("Aliases"));
         assert!(report.contains("/model <name>    Switch models for this REPL session"));
@@ -4576,17 +4739,17 @@ mod tests {
 
     #[test]
     fn model_switch_report_preserves_context_summary() {
-        let report = format_model_switch_report("sonnet", "opus", 9);
+        let report = format_model_switch_report("code", "reasoner", 9);
         assert!(report.contains("Model updated"));
-        assert!(report.contains("Previous         sonnet"));
-        assert!(report.contains("Current          opus"));
+        assert!(report.contains("Previous         code"));
+        assert!(report.contains("Current          reasoner"));
         assert!(report.contains("Preserved        9 messages"));
     }
 
     #[test]
     fn status_line_reports_model_and_token_totals() {
         let status = format_status_report(
-            "sonnet",
+            "code",
             StatusUsage {
                 message_count: 7,
                 turns: 3,
@@ -4616,7 +4779,7 @@ mod tests {
             },
         );
         assert!(status.contains("Session"));
-        assert!(status.contains("Model            sonnet"));
+        assert!(status.contains("Model            code"));
         assert!(status.contains("Permissions      workspace-write"));
         assert!(status.contains("Activity         7 messages · 3 turns"));
         assert!(status.contains("Tokens           est 128 · latest 10 · total 31"));
@@ -4727,8 +4890,8 @@ mod tests {
 
     #[test]
     fn init_template_mentions_detected_rust_workspace() {
-        let rendered = crate::init::render_init_claw_md(std::path::Path::new("."));
-        assert!(rendered.contains("# CLAW.md"));
+        let rendered = crate::init::render_init_clues_md(std::path::Path::new("."));
+        assert!(rendered.contains("# CLUES.md"));
         assert!(rendered.contains("cargo clippy --workspace --all-targets -- -D warnings"));
     }
 
@@ -4875,7 +5038,7 @@ mod tests {
             task_label: "ship plugin progress".to_string(),
             step: 3,
             phase: "running read_file".to_string(),
-            detail: Some("reading rust/crates/claw-cli/src/main.rs".to_string()),
+            detail: Some("reading rust/crates/clues-cli/src/main.rs".to_string()),
             saw_final_text: false,
         };
 
@@ -4922,8 +5085,8 @@ mod tests {
             "reading src/main.rs"
         );
         assert!(
-            describe_tool_progress("bash", r#"{"command":"cargo test -p claw-cli"}"#)
-                .contains("cargo test -p claw-cli")
+            describe_tool_progress("bash", r#"{"command":"cargo test -p clues-cli"}"#)
+                .contains("cargo test -p clues-cli")
         );
         assert_eq!(
             describe_tool_progress("grep_search", r#"{"pattern":"ultraplan","path":"rust"}"#),
@@ -4986,7 +5149,7 @@ mod tests {
             MessageResponse {
                 id: "msg-1".to_string(),
                 kind: "message".to_string(),
-                model: "claude-opus-4-6".to_string(),
+                model: DEFAULT_MODEL.to_string(),
                 role: "assistant".to_string(),
                 content: vec![OutputContentBlock::ToolUse {
                     id: "tool-1".to_string(),
@@ -5021,7 +5184,7 @@ mod tests {
             MessageResponse {
                 id: "msg-2".to_string(),
                 kind: "message".to_string(),
-                model: "claude-opus-4-6".to_string(),
+                model: DEFAULT_MODEL.to_string(),
                 role: "assistant".to_string(),
                 content: vec![OutputContentBlock::ToolUse {
                     id: "tool-2".to_string(),
@@ -5056,7 +5219,7 @@ mod tests {
             MessageResponse {
                 id: "msg-3".to_string(),
                 kind: "message".to_string(),
-                model: "claude-opus-4-6".to_string(),
+                model: DEFAULT_MODEL.to_string(),
                 role: "assistant".to_string(),
                 content: vec![
                     OutputContentBlock::Thinking {

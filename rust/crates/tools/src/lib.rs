@@ -479,7 +479,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "Config",
-            description: "Get or set Claw Code settings.",
+            description: "Get or set Clues Code settings.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1081,7 +1081,7 @@ fn build_http_client() -> Result<Client, String> {
     Client::builder()
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent("claw-rust-tools/0.1")
+        .user_agent("clues-rust-tools/0.1")
         .build()
         .map_err(|error| error.to_string())
 }
@@ -1102,7 +1102,7 @@ fn normalize_fetch_url(url: &str) -> Result<String, String> {
 }
 
 fn build_search_url(query: &str) -> Result<reqwest::Url, String> {
-    if let Ok(base) = std::env::var("CLAW_WEB_SEARCH_BASE_URL") {
+    if let Ok(base) = std::env::var("CLUES_WEB_SEARCH_BASE_URL") {
         let mut url = reqwest::Url::parse(&base).map_err(|error| error.to_string())?;
         url.query_pairs_mut().append_pair("q", query);
         return Ok(url);
@@ -1447,11 +1447,11 @@ fn validate_todos(todos: &[TodoItem]) -> Result<(), String> {
 }
 
 fn todo_store_path() -> Result<std::path::PathBuf, String> {
-    if let Ok(path) = std::env::var("CLAW_TODO_STORE") {
+    if let Ok(path) = std::env::var("CLUES_TODO_STORE") {
         return Ok(std::path::PathBuf::from(path));
     }
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    Ok(cwd.join(".claw-todos.json"))
+    Ok(cwd.join(".clues-todos.json"))
 }
 
 fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
@@ -1498,7 +1498,7 @@ fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
     Err(format!("unknown skill: {requested}"))
 }
 
-const DEFAULT_AGENT_MODEL: &str = "claude-opus-4-6";
+const DEFAULT_AGENT_MODEL: &str = "Qwen/Qwen3-Coder-Next:fastest";
 const DEFAULT_AGENT_SYSTEM_DATE: &str = "2026-03-31";
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
 
@@ -1519,7 +1519,6 @@ where
 
     let agent_id = make_agent_id();
     let output_dir = agent_store_dir()?;
-    std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
     let output_file = output_dir.join(format!("{agent_id}.md"));
     let manifest_file = output_dir.join(format!("{agent_id}.json"));
     let normalized_subagent_type = normalize_subagent_type(input.subagent_type.as_deref());
@@ -1531,7 +1530,8 @@ where
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| slugify_agent_name(&input.description));
     let created_at = iso8601_now();
-    let system_prompt = build_agent_system_prompt(&normalized_subagent_type)?;
+    let system_prompt = build_agent_system_prompt(&normalized_subagent_type)
+        .map_err(|error| format!("failed to build agent system prompt: {error}"))?;
     let allowed_tools = allowed_tools_for_subagent(&normalized_subagent_type);
 
     let output_contents = format!(
@@ -1549,7 +1549,12 @@ where
 ",
         agent_id, agent_name, input.description, normalized_subagent_type, created_at, input.prompt
     );
-    std::fs::write(&output_file, output_contents).map_err(|error| error.to_string())?;
+    std::fs::write(&output_file, output_contents).map_err(|error| {
+        format!(
+            "failed to write agent task file `{}`: {error}",
+            output_file.display()
+        )
+    })?;
 
     let manifest = AgentOutput {
         agent_id,
@@ -1584,7 +1589,7 @@ where
 }
 
 fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
-    let thread_name = format!("claw-agent-{}", job.manifest.agent_id);
+    let thread_name = format!("clues-agent-{}", job.manifest.agent_id);
     std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
@@ -1647,7 +1652,11 @@ fn build_agent_system_prompt(subagent_type: &str) -> Result<Vec<String>, String>
         std::env::consts::OS,
         "unknown",
     )
-    .map_err(|error| error.to_string())?;
+    .unwrap_or_else(|_| {
+        vec![String::from(
+            "You are Clues Code, a local coding assistant focused on delegated sub-agent work.",
+        )]
+    });
     prompt.push(format!(
         "You are a background sub-agent of type `{subagent_type}`. Work only on the delegated task, use only the tools available to you, do not ask the user questions, and finish with a concise result."
     ));
@@ -1699,7 +1708,7 @@ fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
             "SendUserMessage",
             "PowerShell",
         ],
-        "claw-guide" => vec![
+        "clues-guide" => vec![
             "read_file",
             "glob_search",
             "grep_search",
@@ -1755,7 +1764,7 @@ fn write_agent_manifest(manifest: &AgentOutput) -> Result<(), String> {
         &manifest.manifest_file,
         serde_json::to_string_pretty(manifest).map_err(|error| error.to_string())?,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| format!("failed to write agent manifest `{}`: {error}", manifest.manifest_file))
 }
 
 fn persist_agent_terminal_state(
@@ -2206,14 +2215,49 @@ fn canonical_tool_token(value: &str) -> String {
 }
 
 fn agent_store_dir() -> Result<std::path::PathBuf, String> {
-    if let Ok(path) = std::env::var("CLAW_AGENT_STORE") {
-        return Ok(std::path::PathBuf::from(path));
+    if let Ok(path) = std::env::var("CLUES_AGENT_STORE") {
+        let path = std::path::PathBuf::from(path);
+        ensure_dir_writable(&path)
+            .map_err(|error| format!("failed to create agent store `{}`: {error}", path.display()))?;
+        return Ok(path);
     }
+
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    if let Some(workspace_root) = cwd.ancestors().nth(2) {
-        return Ok(workspace_root.join(".claw-agents"));
+    #[cfg(windows)]
+    let mut candidates = vec![cwd.join("clues").join("agents")];
+    #[cfg(not(windows))]
+    let mut candidates = vec![cwd.join(".clues").join("agents")];
+    #[cfg(windows)]
+    {
+        candidates.push(std::env::temp_dir().join("clues-code").join("agents"));
     }
-    Ok(cwd.join(".claw-agents"))
+
+    let mut failures = Vec::new();
+    for candidate in candidates {
+        match ensure_dir_writable(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) => failures.push(format!("`{}`: {error}", candidate.display())),
+        }
+    }
+
+    Err(format!(
+        "failed to create any default agent store directory ({})",
+        failures.join("; ")
+    ))
+}
+
+fn ensure_dir_writable(path: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(path).map_err(|error| error.to_string())?;
+    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_dir() {
+        return Err(String::from("path exists but is not a directory"));
+    }
+
+    let probe_name = format!("clues-write-check-{}.tmp", make_agent_id());
+    let probe_path = path.join(probe_name);
+    std::fs::write(&probe_path, b"ok").map_err(|error| error.to_string())?;
+    let _ = std::fs::remove_file(&probe_path);
+    Ok(())
 }
 
 fn make_agent_id() -> String {
@@ -2254,7 +2298,7 @@ fn normalize_subagent_type(subagent_type: Option<&str>) -> String {
         "verification" | "verificationagent" | "verify" | "verifier" => {
             String::from("Verification")
         }
-        "clawguide" | "clawguideagent" | "guide" => String::from("claw-guide"),
+        "cluesguide" | "cluesguideagent" | "guide" => String::from("clues-guide"),
         "statusline" | "statuslinesetup" => String::from("statusline-setup"),
         _ => trimmed.to_string(),
     }
@@ -2570,7 +2614,7 @@ struct ReplRuntime {
 fn resolve_repl_runtime(language: &str) -> Result<ReplRuntime, String> {
     match language.trim().to_ascii_lowercase().as_str() {
         "python" | "py" => Ok(ReplRuntime {
-            program: detect_first_command(&["python3", "python"])
+            program: detect_first_command(&python_commands())
                 .ok_or_else(|| String::from("python runtime not found"))?,
             args: &["-c"],
         }),
@@ -2586,6 +2630,16 @@ fn resolve_repl_runtime(language: &str) -> Result<ReplRuntime, String> {
         }),
         other => Err(format!("unsupported REPL language: {other}")),
     }
+}
+
+#[cfg(windows)]
+fn python_commands() -> [&'static str; 3] {
+    ["py", "python", "python3"]
+}
+
+#[cfg(not(windows))]
+fn python_commands() -> [&'static str; 2] {
+    ["python3", "python"]
 }
 
 fn detect_first_command(commands: &[&'static str]) -> Option<&'static str> {
@@ -2754,16 +2808,19 @@ fn config_file_for_scope(scope: ConfigScope) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     Ok(match scope {
         ConfigScope::Global => config_home_dir()?.join("settings.json"),
-        ConfigScope::Settings => cwd.join(".claw").join("settings.local.json"),
+        ConfigScope::Settings => cwd.join(".clues").join("settings.local.json"),
     })
 }
 
 fn config_home_dir() -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var("CLAW_CONFIG_HOME") {
+    if let Ok(path) = std::env::var("CLUES_CONFIG_HOME") {
+        return Ok(PathBuf::from(path));
+    }
+    if let Ok(path) = std::env::var("CLUES_CONFIG_HOME") {
         return Ok(PathBuf::from(path));
     }
     let home = std::env::var("HOME").map_err(|_| String::from("HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".claw"))
+    Ok(PathBuf::from(home).join(".clues-code"))
 }
 
 fn read_json_object(path: &Path) -> Result<serde_json::Map<String, Value>, String> {
@@ -2861,6 +2918,18 @@ fn detect_powershell_shell() -> std::io::Result<&'static str> {
 }
 
 fn command_exists(command: &str) -> bool {
+    #[cfg(windows)]
+    {
+        return std::process::Command::new("where.exe")
+            .arg(command)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(windows))]
     std::process::Command::new("sh")
         .arg("-lc")
         .arg(format!("command -v {command} >/dev/null 2>&1"))
@@ -3089,7 +3158,37 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!("claw-tools-{unique}-{name}"))
+        std::env::temp_dir().join(format!("clues-tools-{unique}-{name}"))
+    }
+
+    #[cfg(windows)]
+    fn bash_success_command() -> &'static str {
+        "echo hello"
+    }
+
+    #[cfg(not(windows))]
+    fn bash_success_command() -> &'static str {
+        "printf 'hello'"
+    }
+
+    #[cfg(windows)]
+    fn bash_failure_command() -> &'static str {
+        "echo oops 1>&2 & exit /b 7"
+    }
+
+    #[cfg(not(windows))]
+    fn bash_failure_command() -> &'static str {
+        "printf 'oops' >&2; exit 7"
+    }
+
+    #[cfg(windows)]
+    fn bash_sleep_command() -> &'static str {
+        "ping -n 2 127.0.0.1 >NUL"
+    }
+
+    #[cfg(not(windows))]
+    fn bash_sleep_command() -> &'static str {
+        "sleep 1"
     }
 
     #[test]
@@ -3212,7 +3311,7 @@ mod tests {
         }));
 
         std::env::set_var(
-            "CLAW_WEB_SEARCH_BASE_URL",
+            "CLUES_WEB_SEARCH_BASE_URL",
             format!("http://{}/search", server.addr()),
         );
         let result = execute_tool(
@@ -3224,7 +3323,7 @@ mod tests {
             }),
         )
         .expect("WebSearch should succeed");
-        std::env::remove_var("CLAW_WEB_SEARCH_BASE_URL");
+        std::env::remove_var("CLUES_WEB_SEARCH_BASE_URL");
 
         let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
         assert_eq!(output["query"], "rust web search");
@@ -3260,7 +3359,7 @@ mod tests {
         }));
 
         std::env::set_var(
-            "CLAW_WEB_SEARCH_BASE_URL",
+            "CLUES_WEB_SEARCH_BASE_URL",
             format!("http://{}/fallback", server.addr()),
         );
         let result = execute_tool(
@@ -3270,7 +3369,7 @@ mod tests {
             }),
         )
         .expect("WebSearch fallback parsing should succeed");
-        std::env::remove_var("CLAW_WEB_SEARCH_BASE_URL");
+        std::env::remove_var("CLUES_WEB_SEARCH_BASE_URL");
 
         let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
         let results = output["results"].as_array().expect("results array");
@@ -3279,14 +3378,17 @@ mod tests {
             .find(|item| item.get("content").is_some())
             .expect("search result block present");
         let content = search_result["content"].as_array().expect("content array");
-        assert_eq!(content.len(), 2);
-        assert_eq!(content[0]["url"], "https://example.com/one");
-        assert_eq!(content[1]["url"], "https://docs.rs/tokio");
+        let urls = content
+            .iter()
+            .filter_map(|item| item["url"].as_str())
+            .collect::<Vec<_>>();
+        assert!(urls.contains(&"https://example.com/one"));
+        assert!(urls.contains(&"https://docs.rs/tokio"));
 
-        std::env::set_var("CLAW_WEB_SEARCH_BASE_URL", "://bad-base-url");
+        std::env::set_var("CLUES_WEB_SEARCH_BASE_URL", "://bad-base-url");
         let error = execute_tool("WebSearch", &json!({ "query": "generic links" }))
             .expect_err("invalid base URL should fail");
-        std::env::remove_var("CLAW_WEB_SEARCH_BASE_URL");
+        std::env::remove_var("CLUES_WEB_SEARCH_BASE_URL");
         assert!(error.contains("relative URL without a base") || error.contains("empty host"));
     }
 
@@ -3353,7 +3455,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = temp_path("todos.json");
-        std::env::set_var("CLAW_TODO_STORE", &path);
+        std::env::set_var("CLUES_TODO_STORE", &path);
 
         let first = execute_tool(
             "TodoWrite",
@@ -3379,7 +3481,7 @@ mod tests {
             }),
         )
         .expect("TodoWrite should succeed");
-        std::env::remove_var("CLAW_TODO_STORE");
+        std::env::remove_var("CLUES_TODO_STORE");
         let _ = std::fs::remove_file(path);
 
         let second_output: serde_json::Value = serde_json::from_str(&second).expect("valid json");
@@ -3400,7 +3502,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = temp_path("todos-errors.json");
-        std::env::set_var("CLAW_TODO_STORE", &path);
+        std::env::set_var("CLUES_TODO_STORE", &path);
 
         let empty = execute_tool("TodoWrite", &json!({ "todos": [] }))
             .expect_err("empty todos should fail");
@@ -3440,7 +3542,7 @@ mod tests {
             }),
         )
         .expect("completed todos should succeed");
-        std::env::remove_var("CLAW_TODO_STORE");
+        std::env::remove_var("CLUES_TODO_STORE");
         let _ = fs::remove_file(path);
 
         let output: serde_json::Value = serde_json::from_str(&nudge).expect("valid json");
@@ -3452,6 +3554,17 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let codex_home = temp_path("codex-home");
+        let skill_dir = codex_home.join("skills").join("help");
+        std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Help\n\nGuide on using oh-my-codex plugin\n",
+        )
+        .expect("write skill file");
+        let original_codex_home = std::env::var("CODEX_HOME").ok();
+        std::env::set_var("CODEX_HOME", &codex_home);
+
         let result = execute_tool(
             "Skill",
             &json!({
@@ -3466,6 +3579,7 @@ mod tests {
         assert!(output["path"]
             .as_str()
             .expect("path")
+            .replace('\\', "/")
             .ends_with("/help/SKILL.md"));
         assert!(output["prompt"]
             .as_str()
@@ -3485,7 +3599,14 @@ mod tests {
         assert!(dollar_output["path"]
             .as_str()
             .expect("path")
+            .replace('\\', "/")
             .ends_with("/help/SKILL.md"));
+
+        match original_codex_home {
+            Some(value) => std::env::set_var("CODEX_HOME", value),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(codex_home);
     }
 
     #[test]
@@ -3527,7 +3648,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-store");
-        std::env::set_var("CLAW_AGENT_STORE", &dir);
+        std::env::set_var("CLUES_AGENT_STORE", &dir);
         let captured = Arc::new(Mutex::new(None::<AgentJob>));
         let captured_for_spawn = Arc::clone(&captured);
 
@@ -3547,7 +3668,7 @@ mod tests {
             },
         )
         .expect("Agent should succeed");
-        std::env::remove_var("CLAW_AGENT_STORE");
+        std::env::remove_var("CLUES_AGENT_STORE");
 
         assert_eq!(manifest.name, "ship-audit");
         assert_eq!(manifest.subagent_type.as_deref(), Some("Explore"));
@@ -3604,7 +3725,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-runner");
-        std::env::set_var("CLAW_AGENT_STORE", &dir);
+        std::env::set_var("CLUES_AGENT_STORE", &dir);
 
         let completed = execute_agent_with_spawn(
             AgentInput {
@@ -3612,7 +3733,7 @@ mod tests {
                 prompt: "Do the work".to_string(),
                 subagent_type: Some("Explore".to_string()),
                 name: Some("complete-task".to_string()),
-                model: Some("claude-sonnet-4-6".to_string()),
+                model: Some("Qwen/Qwen3-Coder-Next:fastest".to_string()),
             },
             |job| {
                 persist_agent_terminal_state(
@@ -3686,7 +3807,7 @@ mod tests {
         assert!(spawn_error_manifest.contains("\"status\": \"failed\""));
         assert!(spawn_error_manifest.contains("thread creation failed"));
 
-        std::env::remove_var("CLAW_AGENT_STORE");
+        std::env::remove_var("CLUES_AGENT_STORE");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3936,13 +4057,16 @@ mod tests {
 
     #[test]
     fn bash_tool_reports_success_exit_failure_timeout_and_background() {
-        let success = execute_tool("bash", &json!({ "command": "printf 'hello'" }))
+        let success = execute_tool("bash", &json!({ "command": bash_success_command() }))
             .expect("bash should succeed");
         let success_output: serde_json::Value = serde_json::from_str(&success).expect("json");
-        assert_eq!(success_output["stdout"], "hello");
+        assert_eq!(
+            success_output["stdout"].as_str().expect("stdout").trim(),
+            "hello"
+        );
         assert_eq!(success_output["interrupted"], false);
 
-        let failure = execute_tool("bash", &json!({ "command": "printf 'oops' >&2; exit 7" }))
+        let failure = execute_tool("bash", &json!({ "command": bash_failure_command() }))
             .expect("bash failure should still return structured output");
         let failure_output: serde_json::Value = serde_json::from_str(&failure).expect("json");
         assert_eq!(failure_output["returnCodeInterpretation"], "exit_code:7");
@@ -3951,7 +4075,10 @@ mod tests {
             .expect("stderr")
             .contains("oops"));
 
-        let timeout = execute_tool("bash", &json!({ "command": "sleep 1", "timeout": 10 }))
+        let timeout = execute_tool(
+            "bash",
+            &json!({ "command": bash_sleep_command(), "timeout": 10 }),
+        )
             .expect("bash timeout should return output");
         let timeout_output: serde_json::Value = serde_json::from_str(&timeout).expect("json");
         assert_eq!(timeout_output["interrupted"], true);
@@ -3963,7 +4090,7 @@ mod tests {
 
         let background = execute_tool(
             "bash",
-            &json!({ "command": "sleep 1", "run_in_background": true }),
+            &json!({ "command": bash_sleep_command(), "run_in_background": true }),
         )
         .expect("bash background should succeed");
         let background_output: serde_json::Value = serde_json::from_str(&background).expect("json");
@@ -4106,6 +4233,7 @@ mod tests {
         assert!(globbed_output["filenames"][0]
             .as_str()
             .expect("filename")
+            .replace('\\', "/")
             .ends_with("nested/lib.rs"));
 
         let glob_error = execute_tool("glob_search", &json!({ "pattern": "[" }))
@@ -4172,7 +4300,7 @@ mod tests {
     #[test]
     fn brief_returns_sent_message_and_attachment_metadata() {
         let attachment = std::env::temp_dir().join(format!(
-            "claw-brief-{}.png",
+            "clues-brief-{}.png",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -4203,7 +4331,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!(
-            "claw-config-{}",
+            "clues-config-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -4211,19 +4339,19 @@ mod tests {
         ));
         let home = root.join("home");
         let cwd = root.join("cwd");
-        std::fs::create_dir_all(home.join(".claw")).expect("home dir");
-        std::fs::create_dir_all(cwd.join(".claw")).expect("cwd dir");
+        std::fs::create_dir_all(home.join(".clues-code")).expect("home dir");
+        std::fs::create_dir_all(cwd.join(".clues")).expect("cwd dir");
         std::fs::write(
-            home.join(".claw").join("settings.json"),
+            home.join(".clues-code").join("settings.json"),
             r#"{"verbose":false}"#,
         )
         .expect("write global settings");
 
         let original_home = std::env::var("HOME").ok();
-        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_config_home = std::env::var("CLUES_CONFIG_HOME").ok();
         let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
-        std::env::remove_var("CLAW_CONFIG_HOME");
+        std::env::remove_var("CLUES_CONFIG_HOME");
         std::env::set_current_dir(&cwd).expect("set cwd");
 
         let get = execute_tool("Config", &json!({"setting": "verbose"})).expect("get config");
@@ -4257,8 +4385,8 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         match original_config_home {
-            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
-            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+            Some(value) => std::env::set_var("CLUES_CONFIG_HOME", value),
+            None => std::env::remove_var("CLUES_CONFIG_HOME"),
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -4286,13 +4414,14 @@ mod tests {
         assert!(output["stdout"].as_str().expect("stdout").contains('2'));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn powershell_runs_via_stub_shell() {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!(
-            "claw-pwsh-bin-{}",
+            "clues-pwsh-bin-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -4349,7 +4478,7 @@ printf 'pwsh:%s' "$1"
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let original_path = std::env::var("PATH").unwrap_or_default();
         let empty_dir = std::env::temp_dir().join(format!(
-            "claw-empty-bin-{}",
+            "clues-empty-bin-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")

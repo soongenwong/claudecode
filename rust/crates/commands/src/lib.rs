@@ -138,7 +138,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "config",
         aliases: &[],
-        summary: "Inspect Claw config files or merged sections",
+        summary: "Inspect Clues Code config files or merged sections",
         argument_hint: Some("[env|hooks|model|plugins]"),
         resume_supported: true,
         category: SlashCommandCategory::Workspace,
@@ -146,7 +146,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "memory",
         aliases: &[],
-        summary: "Inspect loaded Claw instruction memory files",
+        summary: "Inspect loaded Clues Code instruction memory files",
         argument_hint: None,
         resume_supported: true,
         category: SlashCommandCategory::Workspace,
@@ -154,7 +154,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "init",
         aliases: &[],
-        summary: "Create a starter CLAW.md for this repo",
+        summary: "Create starter repo guidance and local config files",
         argument_hint: None,
         resume_supported: true,
         category: SlashCommandCategory::Workspace,
@@ -274,7 +274,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "plugin",
         aliases: &["plugins", "marketplace"],
-        summary: "Manage Claw Code plugins",
+        summary: "Manage Clues Code plugins",
         argument_hint: Some(
             "[list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]",
         ),
@@ -488,7 +488,7 @@ pub fn render_slash_command_help() -> String {
     let mut lines = vec![
         "Slash commands".to_string(),
         "  Tab completes commands inside the REPL.".to_string(),
-        "  [resume] = also available via claw --resume SESSION.json".to_string(),
+        "  [resume] = also available via clues --resume SESSION.json".to_string(),
     ];
 
     for category in [
@@ -627,20 +627,20 @@ pub struct PluginsCommandResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DefinitionSource {
     ProjectCodex,
-    ProjectClaw,
+    ProjectClues,
     UserCodexHome,
     UserCodex,
-    UserClaw,
+    UserClues,
 }
 
 impl DefinitionSource {
     fn label(self) -> &'static str {
         match self {
             Self::ProjectCodex => "Project (.codex)",
-            Self::ProjectClaw => "Project (.claw)",
+            Self::ProjectClues => "Project (.clues)",
             Self::UserCodexHome => "User ($CODEX_HOME)",
             Self::UserCodex => "User (~/.codex)",
-            Self::UserClaw => "User (~/.claw)",
+            Self::UserClues => "User (~/.clues-code)",
         }
     }
 }
@@ -939,7 +939,7 @@ pub fn handle_commit_slash_command(message: &str, cwd: &Path) -> io::Result<Stri
     }
 
     git_status_ok(cwd, &["add", "-A"])?;
-    let path = write_temp_text_file("claw-commit-message", "txt", message)?;
+    let path = write_temp_text_file("clues-commit-message", "txt", message)?;
     let path_string = path.to_string_lossy().into_owned();
     git_status_ok(cwd, &["commit", "--file", path_string.as_str()])?;
 
@@ -998,7 +998,7 @@ pub fn handle_commit_push_pr_slash_command(
 
     git_status_ok(cwd, &["push", "--set-upstream", "origin", branch.as_str()])?;
 
-    let body_path = write_temp_text_file("claw-pr-body", "md", request.pr_body.trim())?;
+    let body_path = write_temp_text_file("clues-pr-body", "md", request.pr_body.trim())?;
     let body_path_string = body_path.to_string_lossy().into_owned();
     let create = Command::new("gh")
         .args([
@@ -1271,8 +1271,8 @@ fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSource, P
         );
         push_unique_root(
             &mut roots,
-            DefinitionSource::ProjectClaw,
-            ancestor.join(".claw").join(leaf),
+            DefinitionSource::ProjectClues,
+            ancestor.join(".clues").join(leaf),
         );
     }
 
@@ -1293,8 +1293,8 @@ fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSource, P
         );
         push_unique_root(
             &mut roots,
-            DefinitionSource::UserClaw,
-            home.join(".claw").join(leaf),
+            DefinitionSource::UserClues,
+            home.join(".clues").join(leaf),
         );
     }
 
@@ -1313,8 +1313,8 @@ fn discover_skill_roots(cwd: &Path) -> Vec<SkillRoot> {
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::ProjectClaw,
-            ancestor.join(".claw").join("skills"),
+            DefinitionSource::ProjectClues,
+            ancestor.join(".clues").join("skills"),
             SkillOrigin::SkillsDir,
         );
         push_unique_skill_root(
@@ -1325,8 +1325,8 @@ fn discover_skill_roots(cwd: &Path) -> Vec<SkillRoot> {
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::ProjectClaw,
-            ancestor.join(".claw").join("commands"),
+            DefinitionSource::ProjectClues,
+            ancestor.join(".clues").join("commands"),
             SkillOrigin::LegacyCommandsDir,
         );
     }
@@ -1363,14 +1363,14 @@ fn discover_skill_roots(cwd: &Path) -> Vec<SkillRoot> {
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserClaw,
-            home.join(".claw").join("skills"),
+            DefinitionSource::UserClues,
+            home.join(".clues").join("skills"),
             SkillOrigin::SkillsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserClaw,
-            home.join(".claw").join("commands"),
+            DefinitionSource::UserClues,
+            home.join(".clues").join("commands"),
             SkillOrigin::LegacyCommandsDir,
         );
     }
@@ -1609,10 +1609,10 @@ fn render_agents_report(agents: &[AgentSummary]) -> String {
 
     for source in [
         DefinitionSource::ProjectCodex,
-        DefinitionSource::ProjectClaw,
+        DefinitionSource::ProjectClues,
         DefinitionSource::UserCodexHome,
         DefinitionSource::UserCodex,
-        DefinitionSource::UserClaw,
+        DefinitionSource::UserClues,
     ] {
         let group = agents
             .iter()
@@ -1667,10 +1667,10 @@ fn render_skills_report(skills: &[SkillSummary]) -> String {
 
     for source in [
         DefinitionSource::ProjectCodex,
-        DefinitionSource::ProjectClaw,
+        DefinitionSource::ProjectClues,
         DefinitionSource::UserCodexHome,
         DefinitionSource::UserCodex,
-        DefinitionSource::UserClaw,
+        DefinitionSource::UserClues,
     ] {
         let group = skills
             .iter()
@@ -1709,8 +1709,8 @@ fn render_agents_usage(unexpected: Option<&str>) -> String {
     let mut lines = vec![
         "Agents".to_string(),
         "  Usage            /agents".to_string(),
-        "  Direct CLI       claw agents".to_string(),
-        "  Sources          .codex/agents, .claw/agents, $CODEX_HOME/agents".to_string(),
+        "  Direct CLI       clues agents".to_string(),
+        "  Sources          .codex/agents, .clues/agents, $CODEX_HOME/agents".to_string(),
     ];
     if let Some(args) = unexpected {
         lines.push(format!("  Unexpected       {args}"));
@@ -1722,8 +1722,8 @@ fn render_skills_usage(unexpected: Option<&str>) -> String {
     let mut lines = vec![
         "Skills".to_string(),
         "  Usage            /skills".to_string(),
-        "  Direct CLI       claw skills".to_string(),
-        "  Sources          .codex/skills, .claw/skills, legacy /commands".to_string(),
+        "  Direct CLI       clues skills".to_string(),
+        "  Sources          .codex/skills, .clues/skills, legacy /commands".to_string(),
     ];
     if let Some(args) = unexpected {
         lines.push(format!("  Unexpected       {args}"));
@@ -1790,25 +1790,26 @@ pub fn handle_slash_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_branch_slash_command, handle_commit_push_pr_slash_command,
-        handle_commit_slash_command, handle_plugins_slash_command, handle_slash_command,
-        handle_worktree_slash_command, load_agents_from_roots, load_skills_from_roots,
-        render_agents_report, render_plugins_report, render_skills_report,
-        render_slash_command_help, resume_supported_slash_commands, slash_command_specs,
-        suggest_slash_commands, CommitPushPrRequest, DefinitionSource, SkillOrigin, SkillRoot,
+        handle_branch_slash_command, handle_commit_slash_command, handle_plugins_slash_command,
+        handle_slash_command, handle_worktree_slash_command, load_agents_from_roots,
+        load_skills_from_roots, render_agents_report, render_plugins_report,
+        render_skills_report, render_slash_command_help, resume_supported_slash_commands,
+        slash_command_specs, suggest_slash_commands, DefinitionSource, SkillOrigin, SkillRoot,
         SlashCommand,
     };
+    #[cfg(unix)]
+    use super::{handle_commit_push_pr_slash_command, CommitPushPrRequest};
     use plugins::{PluginKind, PluginManager, PluginManagerConfig, PluginMetadata, PluginSummary};
     use runtime::{CompactionConfig, ContentBlock, ConversationMessage, MessageRole, Session};
-    use std::env;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::sync::{Mutex, OnceLock};
 
     fn temp_dir(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -1818,6 +1819,7 @@ mod tests {
         std::env::temp_dir().join(format!("commands-plugin-{label}-{nanos}"))
     }
 
+    #[cfg(unix)]
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -1868,14 +1870,15 @@ mod tests {
             assert!(rename.status.success(), "git branch -m main should succeed");
         }
 
-        run_command(&root, "git", &["config", "user.name", "Claw Tests"]);
-        run_command(&root, "git", &["config", "user.email", "claw@example.com"]);
+        run_command(&root, "git", &["config", "user.name", "Clues Tests"]);
+        run_command(&root, "git", &["config", "user.email", "clues@example.com"]);
         fs::write(root.join("README.md"), "seed\n").expect("seed file");
         run_command(&root, "git", &["add", "README.md"]);
         run_command(&root, "git", &["commit", "-m", "chore: seed repo"]);
         root
     }
 
+    #[cfg(unix)]
     fn init_bare_repo(label: &str) -> PathBuf {
         let root = temp_dir(label);
         let output = Command::new("git")
@@ -1904,9 +1907,9 @@ mod tests {
     }
 
     fn write_external_plugin(root: &Path, name: &str, version: &str) {
-        fs::create_dir_all(root.join(".claw-plugin")).expect("manifest dir");
+        fs::create_dir_all(root.join(".clues-plugin")).expect("manifest dir");
         fs::write(
-            root.join(".claw-plugin").join("plugin.json"),
+            root.join(".clues-plugin").join("plugin.json"),
             format!(
                 "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"commands plugin\"\n}}"
             ),
@@ -1915,9 +1918,9 @@ mod tests {
     }
 
     fn write_bundled_plugin(root: &Path, name: &str, version: &str, default_enabled: bool) {
-        fs::create_dir_all(root.join(".claw-plugin")).expect("manifest dir");
+        fs::create_dir_all(root.join(".clues-plugin")).expect("manifest dir");
         fs::write(
-            root.join(".claw-plugin").join("plugin.json"),
+            root.join(".clues-plugin").join("plugin.json"),
             format!(
                 "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"bundled commands plugin\",\n  \"defaultEnabled\": {}\n}}",
                 if default_enabled { "true" } else { "false" }
@@ -2108,7 +2111,7 @@ mod tests {
     #[test]
     fn renders_help_from_shared_specs() {
         let help = render_slash_command_help();
-        assert!(help.contains("available via claw --resume SESSION.json"));
+        assert!(help.contains("available via clues --resume SESSION.json"));
         assert!(help.contains("Core flow"));
         assert!(help.contains("Workspace & memory"));
         assert!(help.contains("Sessions & output"));
@@ -2358,7 +2361,7 @@ mod tests {
     fn lists_skills_from_project_and_user_roots() {
         let workspace = temp_dir("skills-workspace");
         let project_skills = workspace.join(".codex").join("skills");
-        let project_commands = workspace.join(".claw").join("commands");
+        let project_commands = workspace.join(".clues").join("commands");
         let user_home = temp_dir("skills-home");
         let user_skills = user_home.join(".codex").join("skills");
 
@@ -2374,7 +2377,7 @@ mod tests {
                 origin: SkillOrigin::SkillsDir,
             },
             SkillRoot {
-                source: DefinitionSource::ProjectClaw,
+                source: DefinitionSource::ProjectClues,
                 path: project_commands,
                 origin: SkillOrigin::LegacyCommandsDir,
             },
@@ -2391,7 +2394,7 @@ mod tests {
         assert!(report.contains("3 available skills"));
         assert!(report.contains("Project (.codex):"));
         assert!(report.contains("plan · Project planning guidance"));
-        assert!(report.contains("Project (.claw):"));
+        assert!(report.contains("Project (.clues):"));
         assert!(report.contains("deploy · Legacy deployment guidance · legacy /commands"));
         assert!(report.contains("User (~/.codex):"));
         assert!(report.contains("(shadowed by Project (.codex)) plan · User planning guidance"));
@@ -2408,7 +2411,7 @@ mod tests {
         let agents_help =
             super::handle_agents_slash_command(Some("help"), &cwd).expect("agents help");
         assert!(agents_help.contains("Usage            /agents"));
-        assert!(agents_help.contains("Direct CLI       claw agents"));
+        assert!(agents_help.contains("Direct CLI       clues agents"));
 
         let agents_unexpected =
             super::handle_agents_slash_command(Some("show planner"), &cwd).expect("agents usage");
@@ -2566,7 +2569,9 @@ mod tests {
         assert!(created.contains("feature/demo"));
         assert!(switched.contains("main"));
         assert!(added.contains("wt-demo"));
-        assert!(listed_worktrees.contains(worktree_path.to_str().expect("utf8 path")));
+        assert!(listed_worktrees
+            .replace('\\', "/")
+            .contains(&worktree_path.to_string_lossy().replace('\\', "/")));
         assert!(removed.contains("Result           removed"));
 
         let _ = fs::remove_dir_all(repo);

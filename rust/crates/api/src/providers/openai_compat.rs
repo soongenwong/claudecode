@@ -16,6 +16,10 @@ use super::{Provider, ProviderFuture};
 
 pub const DEFAULT_XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+pub const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub const DEFAULT_HUGGING_FACE_BASE_URL: &str = "https://router.huggingface.co/v1";
+pub const DEFAULT_GITHUB_MODELS_BASE_URL: &str = "https://models.github.ai/inference";
+const DEFAULT_GITHUB_API_VERSION: &str = "2026-03-10";
 const REQUEST_ID_HEADER: &str = "request-id";
 const ALT_REQUEST_ID_HEADER: &str = "x-request-id";
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(200);
@@ -32,6 +36,18 @@ pub struct OpenAiCompatConfig {
 
 const XAI_ENV_VARS: &[&str] = &["XAI_API_KEY"];
 const OPENAI_ENV_VARS: &[&str] = &["OPENAI_API_KEY"];
+const OPENROUTER_ENV_VARS: &[&str] = &["OPENROUTER_API_KEY", "OPENAI_API_KEY"];
+const HUGGING_FACE_ENV_VARS: &[&str] = &["HF_TOKEN", "HUGGINGFACE_API_KEY", "OPENAI_API_KEY"];
+const GITHUB_MODELS_ENV_VARS: &[&str] = &["GITHUB_TOKEN"];
+
+const XAI_BASE_URL_ENV_VARS: &[&str] = &["XAI_BASE_URL"];
+const OPENAI_BASE_URL_ENV_VARS: &[&str] = &["OPENAI_BASE_URL"];
+const OPENROUTER_BASE_URL_ENV_VARS: &[&str] = &["OPENROUTER_BASE_URL", "OPENAI_BASE_URL"];
+const HUGGING_FACE_BASE_URL_ENV_VARS: &[&str] =
+    &["HUGGINGFACE_BASE_URL", "HF_BASE_URL", "OPENAI_BASE_URL"];
+const GITHUB_MODELS_BASE_URL_ENV_VARS: &[&str] = &["GITHUB_MODELS_BASE_URL"];
+const OPENROUTER_REFERER_ENV_VARS: &[&str] = &["OPENROUTER_HTTP_REFERER", "OPENROUTER_REFERER"];
+const OPENROUTER_TITLE_ENV_VARS: &[&str] = &["OPENROUTER_X_TITLE", "OPENROUTER_TITLE"];
 
 impl OpenAiCompatConfig {
     #[must_use]
@@ -53,11 +69,57 @@ impl OpenAiCompatConfig {
             default_base_url: DEFAULT_OPENAI_BASE_URL,
         }
     }
+
+    #[must_use]
+    pub const fn openrouter() -> Self {
+        Self {
+            provider_name: "OpenRouter",
+            api_key_env: "OPENROUTER_API_KEY",
+            base_url_env: "OPENROUTER_BASE_URL",
+            default_base_url: DEFAULT_OPENROUTER_BASE_URL,
+        }
+    }
+
+    #[must_use]
+    pub const fn hugging_face() -> Self {
+        Self {
+            provider_name: "Hugging Face",
+            api_key_env: "HF_TOKEN",
+            base_url_env: "HUGGINGFACE_BASE_URL",
+            default_base_url: DEFAULT_HUGGING_FACE_BASE_URL,
+        }
+    }
+
+    #[must_use]
+    pub const fn github_models() -> Self {
+        Self {
+            provider_name: "GitHub Models",
+            api_key_env: "GITHUB_TOKEN",
+            base_url_env: "GITHUB_MODELS_BASE_URL",
+            default_base_url: DEFAULT_GITHUB_MODELS_BASE_URL,
+        }
+    }
+
     #[must_use]
     pub fn credential_env_vars(self) -> &'static [&'static str] {
         match self.provider_name {
             "xAI" => XAI_ENV_VARS,
             "OpenAI" => OPENAI_ENV_VARS,
+            "OpenRouter" => OPENROUTER_ENV_VARS,
+            "Hugging Face" => HUGGING_FACE_ENV_VARS,
+            "GitHub Models" => GITHUB_MODELS_ENV_VARS,
+            _ => &[],
+        }
+    }
+
+    #[must_use]
+    pub fn base_url_env_vars(self) -> &'static [&'static str] {
+        match self.provider_name {
+            "xAI" => XAI_BASE_URL_ENV_VARS,
+            "OpenAI" => OPENAI_BASE_URL_ENV_VARS,
+            "OpenRouter" => OPENROUTER_BASE_URL_ENV_VARS,
+            "Hugging Face" => HUGGING_FACE_BASE_URL_ENV_VARS,
+            "GitHub Models" => GITHUB_MODELS_BASE_URL_ENV_VARS,
             _ => &[],
         }
     }
@@ -66,6 +128,7 @@ impl OpenAiCompatConfig {
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatClient {
     http: reqwest::Client,
+    config: OpenAiCompatConfig,
     api_key: String,
     base_url: String,
     max_retries: u32,
@@ -78,6 +141,7 @@ impl OpenAiCompatClient {
     pub fn new(api_key: impl Into<String>, config: OpenAiCompatConfig) -> Self {
         Self {
             http: reqwest::Client::new(),
+            config,
             api_key: api_key.into(),
             base_url: read_base_url(config),
             max_retries: DEFAULT_MAX_RETRIES,
@@ -87,7 +151,7 @@ impl OpenAiCompatClient {
     }
 
     pub fn from_env(config: OpenAiCompatConfig) -> Result<Self, ApiError> {
-        let Some(api_key) = read_env_non_empty(config.api_key_env)? else {
+        let Some(api_key) = read_first_env_non_empty(config.credential_env_vars())? else {
             return Err(ApiError::missing_credentials(
                 config.provider_name,
                 config.credential_env_vars(),
@@ -186,10 +250,12 @@ impl OpenAiCompatClient {
         request: &MessageRequest,
     ) -> Result<reqwest::Response, ApiError> {
         let request_url = chat_completions_endpoint(&self.base_url);
-        self.http
+        let request_builder = self
+            .http
             .post(&request_url)
             .header("content-type", "application/json")
-            .bearer_auth(&self.api_key)
+            .bearer_auth(&self.api_key);
+        apply_provider_headers(request_builder, self.config)?
             .json(&build_chat_completion_request(request))
             .send()
             .await
@@ -726,14 +792,34 @@ fn flatten_tool_result_content(content: &[ToolResultContentBlock]) -> String {
 }
 
 fn openai_tool_definition(tool: &ToolDefinition) -> Value {
+    let parameters = normalize_tool_schema(&tool.input_schema);
     json!({
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description,
-            "parameters": tool.input_schema,
+            "parameters": parameters,
         }
     })
+}
+
+fn normalize_tool_schema(schema: &Value) -> Value {
+    let mut schema = schema.clone();
+    let Value::Object(root) = &mut schema else {
+        return schema;
+    };
+
+    let is_object_schema = root
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "object");
+    if !is_object_schema {
+        return schema;
+    }
+
+    root.entry("properties".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    schema
 }
 
 fn openai_tool_choice(tool_choice: &ToolChoice) -> Value {
@@ -853,6 +939,27 @@ fn read_env_non_empty(key: &str) -> Result<Option<String>, ApiError> {
     }
 }
 
+fn read_first_env_non_empty(keys: &[&str]) -> Result<Option<String>, ApiError> {
+    for key in keys {
+        if let Some(value) = read_env_non_empty(key)? {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+fn read_first_env_value(keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[must_use]
 pub fn has_api_key(key: &str) -> bool {
     read_env_non_empty(key)
@@ -862,8 +969,39 @@ pub fn has_api_key(key: &str) -> bool {
 }
 
 #[must_use]
+pub fn has_any_api_key(keys: &[&str]) -> bool {
+    read_first_env_non_empty(keys)
+        .ok()
+        .and_then(std::convert::identity)
+        .is_some()
+}
+
+#[must_use]
 pub fn read_base_url(config: OpenAiCompatConfig) -> String {
-    std::env::var(config.base_url_env).unwrap_or_else(|_| config.default_base_url.to_string())
+    read_first_env_value(config.base_url_env_vars())
+        .unwrap_or_else(|| config.default_base_url.to_string())
+}
+
+fn apply_provider_headers(
+    mut request_builder: reqwest::RequestBuilder,
+    config: OpenAiCompatConfig,
+) -> Result<reqwest::RequestBuilder, ApiError> {
+    if config.provider_name == "GitHub Models" {
+        request_builder = request_builder
+            .header("accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", DEFAULT_GITHUB_API_VERSION);
+    }
+
+    if config.provider_name == "OpenRouter" {
+        if let Some(referer) = read_first_env_non_empty(OPENROUTER_REFERER_ENV_VARS)? {
+            request_builder = request_builder.header("HTTP-Referer", referer);
+        }
+        if let Some(title) = read_first_env_non_empty(OPENROUTER_TITLE_ENV_VARS)? {
+            request_builder = request_builder.header("X-OpenRouter-Title", title);
+        }
+    }
+
+    Ok(request_builder)
 }
 
 fn chat_completions_endpoint(base_url: &str) -> String {
@@ -981,6 +1119,7 @@ mod tests {
         assert_eq!(payload["messages"][1]["role"], json!("user"));
         assert_eq!(payload["messages"][2]["role"], json!("tool"));
         assert_eq!(payload["tools"][0]["type"], json!("function"));
+        assert_eq!(payload["tools"][0]["function"]["parameters"]["properties"], json!({}));
         assert_eq!(payload["tool_choice"], json!("auto"));
     }
 

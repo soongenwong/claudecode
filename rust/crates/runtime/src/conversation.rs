@@ -791,7 +791,7 @@ mod tests {
 
     #[cfg(windows)]
     fn shell_snippet(script: &str) -> String {
-        script.replace('\'', "\"")
+        script.replace("printf ", "Write-Output ")
     }
 
     #[cfg(not(windows))]

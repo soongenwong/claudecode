@@ -4,9 +4,9 @@
   "module_count": 20,
   "sample_files": [
     "skills/bundled/batch.ts",
-    "skills/bundled/clawApi.ts",
-    "skills/bundled/clawApiContent.ts",
-    "skills/bundled/clawInChrome.ts",
+    "skills/bundled/cluesApi.ts",
+    "skills/bundled/cluesApiContent.ts",
+    "skills/bundled/cluesInChrome.ts",
     "skills/bundled/debug.ts",
     "skills/bundled/index.ts",
     "skills/bundled/keybindings.ts",

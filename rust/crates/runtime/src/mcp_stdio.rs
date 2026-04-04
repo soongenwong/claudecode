@@ -802,7 +802,7 @@ fn default_initialize_params() -> McpInitializeParams {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;

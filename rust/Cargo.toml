@@ -1,5 +1,15 @@
 [workspace]
-members = ["crates/*"]
+members = [
+    "crates/api",
+    "crates/clues-cli",
+    "crates/commands",
+    "crates/compat-harness",
+    "crates/lsp",
+    "crates/plugins",
+    "crates/runtime",
+    "crates/server",
+    "crates/tools",
+]
 resolver = "2"
 
 [workspace.package]

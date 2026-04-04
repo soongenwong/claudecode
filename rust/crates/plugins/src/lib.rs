@@ -18,7 +18,7 @@ const BUNDLED_MARKETPLACE: &str = "bundled";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const REGISTRY_FILE_NAME: &str = "installed.json";
 const MANIFEST_FILE_NAME: &str = "plugin.json";
-const MANIFEST_RELATIVE_PATH: &str = ".claw-plugin/plugin.json";
+const MANIFEST_RELATIVE_PATH: &str = ".clues-plugin/plugin.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -296,20 +296,19 @@ impl PluginTool {
 
     pub fn execute(&self, input: &Value) -> Result<String, PluginError> {
         let input_json = input.to_string();
-        let mut process = Command::new(&self.command);
+        let mut process = build_plugin_command_process(&self.command, &self.args);
         process
-            .args(&self.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("CLAW_PLUGIN_ID", &self.plugin_id)
-            .env("CLAW_PLUGIN_NAME", &self.plugin_name)
-            .env("CLAW_TOOL_NAME", &self.definition.name)
-            .env("CLAW_TOOL_INPUT", &input_json);
+            .env("CLUES_PLUGIN_ID", &self.plugin_id)
+            .env("CLUES_PLUGIN_NAME", &self.plugin_name)
+            .env("CLUES_TOOL_NAME", &self.definition.name)
+            .env("CLUES_TOOL_INPUT", &input_json);
         if let Some(root) = &self.root {
             process
                 .current_dir(root)
-                .env("CLAW_PLUGIN_ROOT", root.display().to_string());
+                .env("CLUES_PLUGIN_ROOT", root.display().to_string());
         }
 
         let mut child = process.spawn()?;
@@ -1669,12 +1668,12 @@ fn validate_command_entry(
         return;
     }
 
-    let path = if Path::new(entry).is_absolute() {
-        PathBuf::from(entry)
-    } else {
-        root.join(entry)
-    };
-    if !path.exists() {
+    if resolve_existing_command_path(root, entry).is_none() {
+        let path = if Path::new(entry).is_absolute() {
+            PathBuf::from(entry)
+        } else {
+            root.join(entry)
+        };
         errors.push(PluginManifestValidationError::MissingPath { kind, path });
     }
 }
@@ -1772,11 +1771,13 @@ fn validate_command_path(root: &Path, entry: &str, kind: &str) -> Result<(), Plu
     if is_literal_command(entry) {
         return Ok(());
     }
-    let path = if Path::new(entry).is_absolute() {
-        PathBuf::from(entry)
-    } else {
-        root.join(entry)
-    };
+    let path = resolve_existing_command_path(root, entry).unwrap_or_else(|| {
+        if Path::new(entry).is_absolute() {
+            PathBuf::from(entry)
+        } else {
+            root.join(entry)
+        }
+    });
     if !path.exists() {
         return Err(PluginError::InvalidManifest(format!(
             "{kind} path `{}` does not exist",
@@ -1790,12 +1791,190 @@ fn resolve_hook_entry(root: &Path, entry: &str) -> String {
     if is_literal_command(entry) {
         entry.to_string()
     } else {
-        root.join(entry).display().to_string()
+        resolve_existing_command_path(root, entry)
+            .unwrap_or_else(|| root.join(entry))
+            .display()
+            .to_string()
     }
 }
 
 fn is_literal_command(entry: &str) -> bool {
     !entry.starts_with("./") && !entry.starts_with("../") && !Path::new(entry).is_absolute()
+}
+
+fn resolve_existing_command_path(root: &Path, entry: &str) -> Option<PathBuf> {
+    if is_literal_command(entry) {
+        return None;
+    }
+
+    let base = if Path::new(entry).is_absolute() {
+        PathBuf::from(entry)
+    } else {
+        root.join(entry)
+    };
+    if base.exists() {
+        return Some(base);
+    }
+
+    if base.extension().is_none() {
+        for extension in platform_command_extensions() {
+            let candidate = base.with_extension(extension);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+fn platform_command_extensions() -> &'static [&'static str] {
+    &["cmd", "bat", "ps1", "exe", "sh"]
+}
+
+#[cfg(not(windows))]
+fn platform_command_extensions() -> &'static [&'static str] {
+    &["sh"]
+}
+
+pub(crate) fn build_plugin_command_process(command: &str, args: &[String]) -> Command {
+    if Path::new(command).exists() {
+        return build_plugin_process_for_path(Path::new(command), args);
+    }
+
+    build_plugin_shell_process(command, args)
+}
+
+fn build_plugin_process_for_path(path: &Path, args: &[String]) -> Command {
+    #[cfg(windows)]
+    {
+        match path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("cmd" | "bat") => {
+                let mut process = Command::new("cmd");
+                process.arg("/C").arg(path).args(args);
+                return process;
+            }
+            Some("ps1") => {
+                let mut process = Command::new("powershell");
+                process
+                    .args([
+                        "-NoLogo",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                    ])
+                    .arg(path)
+                    .args(args);
+                return process;
+            }
+            Some("sh") => {
+                if command_exists("bash") {
+                    let mut process = Command::new("bash");
+                    process.arg(path).args(args);
+                    return process;
+                }
+                if command_exists("sh") {
+                    let mut process = Command::new("sh");
+                    process.arg(path).args(args);
+                    return process;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("sh"))
+        {
+            let mut process = Command::new("sh");
+            process.arg(path).args(args);
+            return process;
+        }
+    }
+
+    let mut process = Command::new(path);
+    process.args(args);
+    process
+}
+
+fn build_plugin_shell_process(command: &str, args: &[String]) -> Command {
+    let command = append_shell_args(command, args);
+    #[cfg(windows)]
+    {
+        let mut process = Command::new("cmd");
+        process.arg("/C").arg(command);
+        process
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut process = Command::new("sh");
+        process.arg("-lc").arg(command);
+        process
+    }
+}
+
+fn append_shell_args(command: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        return command.to_string();
+    }
+
+    let escaped_args = args
+        .iter()
+        .map(|arg| shell_escape_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{command} {escaped_args}")
+}
+
+#[cfg(windows)]
+fn shell_escape_arg(arg: &str) -> String {
+    if arg.is_empty() {
+        "\"\"".to_string()
+    } else if arg.contains([' ', '\t', '"']) {
+        format!("\"{}\"", arg.replace('"', "\\\""))
+    } else {
+        arg.to_string()
+    }
+}
+
+#[cfg(not(windows))]
+fn shell_escape_arg(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\"'\"'"))
+}
+
+fn command_exists(command: &str) -> bool {
+    #[cfg(windows)]
+    {
+        return Command::new("where.exe")
+            .arg(command)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(windows))]
+    {
+        Command::new("sh")
+            .arg("-lc")
+            .arg(format!("command -v {command} >/dev/null 2>&1"))
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 }
 
 fn run_lifecycle_commands(
@@ -1809,25 +1988,7 @@ fn run_lifecycle_commands(
     }
 
     for command in commands {
-        let mut process = if Path::new(command).exists() {
-            if cfg!(windows) {
-                let mut process = Command::new("cmd");
-                process.arg("/C").arg(command);
-                process
-            } else {
-                let mut process = Command::new("sh");
-                process.arg(command);
-                process
-            }
-        } else if cfg!(windows) {
-            let mut process = Command::new("cmd");
-            process.arg("/C").arg(command);
-            process
-        } else {
-            let mut process = Command::new("sh");
-            process.arg("-lc").arg(command);
-            process
-        };
+        let mut process = build_plugin_command_process(command, &[]);
         if let Some(root) = &metadata.root {
             process.current_dir(root);
         }
@@ -2005,6 +2166,8 @@ fn ensure_object<'a>(root: &'a mut Map<String, Value>, key: &str) -> &'a mut Map
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     fn temp_dir(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -2021,18 +2184,56 @@ mod tests {
         fs::write(path, contents).expect("write file");
     }
 
+    fn script_extension() -> &'static str {
+        #[cfg(windows)]
+        {
+            "cmd"
+        }
+        #[cfg(not(windows))]
+        {
+            "sh"
+        }
+    }
+
+    fn manifest_command_path(base: &str) -> String {
+        base.to_string()
+    }
+
+    fn write_script(root: &Path, base: &str, unix_contents: &str, windows_contents: &str) -> PathBuf {
+        let path = root.join(format!("{base}.{}", script_extension()));
+        let contents = if cfg!(windows) {
+            windows_contents
+        } else {
+            unix_contents
+        };
+        write_file(&path, contents);
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&path).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).expect("chmod");
+        }
+        path
+    }
+
     fn write_loader_plugin(root: &Path) {
-        write_file(
-            root.join("hooks").join("pre.sh").as_path(),
+        write_script(
+            root,
+            "hooks/pre",
             "#!/bin/sh\nprintf 'pre'\n",
+            "@echo off\r\necho pre\r\n",
         );
-        write_file(
-            root.join("tools").join("echo-tool.sh").as_path(),
+        write_script(
+            root,
+            "tools/echo-tool",
             "#!/bin/sh\ncat\n",
+            "@echo off\r\nmore\r\n",
         );
-        write_file(
-            root.join("commands").join("sync.sh").as_path(),
+        write_script(
+            root,
+            "commands/sync",
             "#!/bin/sh\nprintf 'sync'\n",
+            "@echo off\r\necho sync\r\n",
         );
         write_file(
             root.join(MANIFEST_FILE_NAME).as_path(),
@@ -2042,7 +2243,7 @@ mod tests {
   "description": "Manifest loader test plugin",
   "permissions": ["read", "write"],
   "hooks": {
-    "PreToolUse": ["./hooks/pre.sh"]
+    "PreToolUse": ["./hooks/pre"]
   },
   "tools": [
     {
@@ -2051,7 +2252,7 @@ mod tests {
       "inputSchema": {
         "type": "object"
       },
-      "command": "./tools/echo-tool.sh",
+      "command": "./tools/echo-tool",
       "requiredPermission": "workspace-write"
     }
   ],
@@ -2059,7 +2260,7 @@ mod tests {
     {
       "name": "sync",
       "description": "Sync command",
-      "command": "./commands/sync.sh"
+      "command": "./commands/sync"
     }
   ]
 }"#,
@@ -2067,18 +2268,24 @@ mod tests {
     }
 
     fn write_external_plugin(root: &Path, name: &str, version: &str) {
-        write_file(
-            root.join("hooks").join("pre.sh").as_path(),
+        write_script(
+            root,
+            "hooks/pre",
             "#!/bin/sh\nprintf 'pre'\n",
+            "@echo off\r\necho pre\r\n",
         );
-        write_file(
-            root.join("hooks").join("post.sh").as_path(),
+        write_script(
+            root,
+            "hooks/post",
             "#!/bin/sh\nprintf 'post'\n",
+            "@echo off\r\necho post\r\n",
         );
         write_file(
             root.join(MANIFEST_RELATIVE_PATH).as_path(),
             format!(
-                "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"test plugin\",\n  \"hooks\": {{\n    \"PreToolUse\": [\"./hooks/pre.sh\"],\n    \"PostToolUse\": [\"./hooks/post.sh\"]\n  }}\n}}"
+                "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"test plugin\",\n  \"hooks\": {{\n    \"PreToolUse\": [\"{}\"],\n    \"PostToolUse\": [\"{}\"]\n  }}\n}}",
+                manifest_command_path("./hooks/pre"),
+                manifest_command_path("./hooks/post"),
             )
             .as_str(),
         );
@@ -2088,7 +2295,7 @@ mod tests {
         write_file(
             root.join(MANIFEST_RELATIVE_PATH).as_path(),
             format!(
-                "{{\n  \"name\": \"{name}\",\n  \"version\": \"1.0.0\",\n  \"description\": \"broken plugin\",\n  \"hooks\": {{\n    \"PreToolUse\": [\"./hooks/missing.sh\"]\n  }}\n}}"
+                "{{\n  \"name\": \"{name}\",\n  \"version\": \"1.0.0\",\n  \"description\": \"broken plugin\",\n  \"hooks\": {{\n    \"PreToolUse\": [\"./hooks/missing\"]\n  }}\n}}"
             )
             .as_str(),
         );
@@ -2096,18 +2303,24 @@ mod tests {
 
     fn write_lifecycle_plugin(root: &Path, name: &str, version: &str) -> PathBuf {
         let log_path = root.join("lifecycle.log");
-        write_file(
-            root.join("lifecycle").join("init.sh").as_path(),
+        write_script(
+            root,
+            "lifecycle/init",
             "#!/bin/sh\nprintf 'init\\n' >> lifecycle.log\n",
+            "@echo off\r\necho init>> lifecycle.log\r\n",
         );
-        write_file(
-            root.join("lifecycle").join("shutdown.sh").as_path(),
+        write_script(
+            root,
+            "lifecycle/shutdown",
             "#!/bin/sh\nprintf 'shutdown\\n' >> lifecycle.log\n",
+            "@echo off\r\necho shutdown>> lifecycle.log\r\n",
         );
         write_file(
             root.join(MANIFEST_RELATIVE_PATH).as_path(),
             format!(
-                "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"lifecycle plugin\",\n  \"lifecycle\": {{\n    \"Init\": [\"./lifecycle/init.sh\"],\n    \"Shutdown\": [\"./lifecycle/shutdown.sh\"]\n  }}\n}}"
+                "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"lifecycle plugin\",\n  \"lifecycle\": {{\n    \"Init\": [\"{}\"],\n    \"Shutdown\": [\"{}\"]\n  }}\n}}",
+                manifest_command_path("./lifecycle/init"),
+                manifest_command_path("./lifecycle/shutdown"),
             )
             .as_str(),
         );
@@ -2119,23 +2332,17 @@ mod tests {
     }
 
     fn write_tool_plugin_with_name(root: &Path, name: &str, version: &str, tool_name: &str) {
-        let script_path = root.join("tools").join("echo-json.sh");
-        write_file(
-            &script_path,
-            "#!/bin/sh\nINPUT=$(cat)\nprintf '{\"plugin\":\"%s\",\"tool\":\"%s\",\"input\":%s}\\n' \"$CLAW_PLUGIN_ID\" \"$CLAW_TOOL_NAME\" \"$INPUT\"\n",
+        write_script(
+            root,
+            "tools/echo-json",
+            "#!/bin/sh\nINPUT=$(cat)\nprintf '{\"plugin\":\"%s\",\"tool\":\"%s\",\"input\":%s}\\n' \"$CLUES_PLUGIN_ID\" \"$CLUES_TOOL_NAME\" \"$INPUT\"\n",
+            "@echo off\r\nsetlocal EnableExtensions\r\nset INPUT=\r\nfor /f \"delims=\" %%A in ('more') do set INPUT=%%A\r\necho {\"plugin\":\"%CLUES_PLUGIN_ID%\",\"tool\":\"%CLUES_TOOL_NAME%\",\"input\":%INPUT%}\r\n",
         );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&script_path, permissions).expect("chmod");
-        }
         write_file(
             root.join(MANIFEST_RELATIVE_PATH).as_path(),
             format!(
-                "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"tool plugin\",\n  \"tools\": [\n    {{\n      \"name\": \"{tool_name}\",\n      \"description\": \"Echo JSON input\",\n      \"inputSchema\": {{\"type\": \"object\", \"properties\": {{\"message\": {{\"type\": \"string\"}}}}, \"required\": [\"message\"], \"additionalProperties\": false}},\n      \"command\": \"./tools/echo-json.sh\",\n      \"requiredPermission\": \"workspace-write\"\n    }}\n  ]\n}}"
+                "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"tool plugin\",\n  \"tools\": [\n    {{\n      \"name\": \"{tool_name}\",\n      \"description\": \"Echo JSON input\",\n      \"inputSchema\": {{\"type\": \"object\", \"properties\": {{\"message\": {{\"type\": \"string\"}}}}, \"required\": [\"message\"], \"additionalProperties\": false}},\n      \"command\": \"{}\",\n      \"requiredPermission\": \"workspace-write\"\n    }}\n  ]\n}}",
+                manifest_command_path("./tools/echo-json"),
             )
             .as_str(),
         );
@@ -2201,7 +2408,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["read", "write"]
         );
-        assert_eq!(manifest.hooks.pre_tool_use, vec!["./hooks/pre.sh"]);
+        assert_eq!(manifest.hooks.pre_tool_use, vec!["./hooks/pre"]);
         assert_eq!(manifest.tools.len(), 1);
         assert_eq!(manifest.tools[0].name, "echo_tool");
         assert_eq!(
@@ -2459,7 +2666,10 @@ mod tests {
 
         let hooks = manager.aggregated_hooks().expect("hooks should aggregate");
         assert_eq!(hooks.pre_tool_use.len(), 1);
-        assert!(hooks.pre_tool_use[0].contains("pre.sh"));
+        assert!(
+            hooks.pre_tool_use[0].contains("pre.cmd")
+                || hooks.pre_tool_use[0].contains("pre.sh")
+        );
 
         manager
             .disable("demo@external")
@@ -2845,7 +3055,7 @@ mod tests {
         registry.shutdown().expect("shutdown should succeed");
 
         let log = fs::read_to_string(&log_path).expect("lifecycle log should exist");
-        assert_eq!(log, "init\nshutdown\n");
+        assert_eq!(log.replace("\r\n", "\n"), "init\nshutdown\n");
 
         let _ = fs::remove_dir_all(config_home);
         let _ = fs::remove_dir_all(source_root);

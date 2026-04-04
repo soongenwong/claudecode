@@ -35,9 +35,9 @@
     "responsibility": "Tool module mirrored from archived TypeScript path tools/AgentTool/agentToolUtils.ts"
   },
   {
-    "name": "clawCodeGuideAgent",
-    "source_hint": "tools/AgentTool/built-in/clawCodeGuideAgent.ts",
-    "responsibility": "Tool module mirrored from archived TypeScript path tools/AgentTool/built-in/clawCodeGuideAgent.ts"
+    "name": "cluesCodeGuideAgent",
+    "source_hint": "tools/AgentTool/built-in/cluesCodeGuideAgent.ts",
+    "responsibility": "Tool module mirrored from archived TypeScript path tools/AgentTool/built-in/cluesCodeGuideAgent.ts"
   },
   {
     "name": "exploreAgent",

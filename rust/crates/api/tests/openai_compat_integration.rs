@@ -232,6 +232,51 @@ async fn provider_client_dispatches_xai_requests_from_env() {
     );
 }
 
+#[tokio::test]
+async fn provider_client_dispatches_github_models_with_github_headers() {
+    let _lock = env_lock();
+    let _api_key = ScopedEnvVar::set("GITHUB_TOKEN", "github-test-key");
+
+    let state = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
+    let server = spawn_server(
+        state.clone(),
+        vec![http_response(
+            "200 OK",
+            "application/json",
+            "{\"id\":\"chatcmpl_provider\",\"model\":\"openai/gpt-4.1-mini\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Through GitHub Models\",\"tool_calls\":[]},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4}}",
+        )],
+    )
+    .await;
+    let _base_url = ScopedEnvVar::set("GITHUB_MODELS_BASE_URL", server.base_url());
+
+    let client =
+        ProviderClient::from_model("github").expect("GitHub Models client should be constructed");
+    assert!(matches!(client, ProviderClient::GitHubModels(_)));
+
+    let response = client
+        .send_message(&sample_request(false))
+        .await
+        .expect("provider-dispatched request should succeed");
+
+    assert_eq!(response.total_tokens(), 13);
+
+    let captured = state.lock().await;
+    let request = captured.first().expect("captured request");
+    assert_eq!(request.path, "/chat/completions");
+    assert_eq!(
+        request.headers.get("authorization").map(String::as_str),
+        Some("Bearer github-test-key")
+    );
+    assert_eq!(
+        request.headers.get("accept").map(String::as_str),
+        Some("application/vnd.github+json")
+    );
+    assert_eq!(
+        request.headers.get("x-github-api-version").map(String::as_str),
+        Some("2026-03-10")
+    );
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CapturedRequest {
     path: String,

@@ -242,11 +242,11 @@ pub fn build_linux_sandbox_command(
         ("HOME".to_string(), sandbox_home.display().to_string()),
         ("TMPDIR".to_string(), sandbox_tmp.display().to_string()),
         (
-            "CLAW_SANDBOX_FILESYSTEM_MODE".to_string(),
+            "CLUES_SANDBOX_FILESYSTEM_MODE".to_string(),
             status.filesystem_mode.as_str().to_string(),
         ),
         (
-            "CLAW_SANDBOX_ALLOWED_MOUNTS".to_string(),
+            "CLUES_SANDBOX_ALLOWED_MOUNTS".to_string(),
             status.allowed_mounts.join(":"),
         ),
     ];

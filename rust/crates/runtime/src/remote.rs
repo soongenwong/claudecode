@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_REMOTE_BASE_URL: &str = "https://api.anthropic.com";
+pub const DEFAULT_REMOTE_BASE_URL: &str = "";
 pub const DEFAULT_SESSION_TOKEN_PATH: &str = "/run/ccr/session_token";
 pub const DEFAULT_SYSTEM_CA_BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
 
@@ -19,7 +19,7 @@ pub const UPSTREAM_PROXY_ENV_KEYS: [&str; 8] = [
     "CURL_CA_BUNDLE",
 ];
 
-pub const NO_PROXY_HOSTS: [&str; 16] = [
+pub const NO_PROXY_HOSTS: [&str; 19] = [
     "localhost",
     "127.0.0.1",
     "::1",
@@ -27,13 +27,16 @@ pub const NO_PROXY_HOSTS: [&str; 16] = [
     "10.0.0.0/8",
     "172.16.0.0/12",
     "192.168.0.0/16",
-    "anthropic.com",
-    ".anthropic.com",
-    "*.anthropic.com",
+    "openrouter.ai",
+    ".openrouter.ai",
+    "router.huggingface.co",
+    ".huggingface.co",
+    "models.github.ai",
     "github.com",
     "api.github.com",
     "*.github.com",
     "*.githubusercontent.com",
+    "api.x.ai",
     "registry.npmjs.org",
     "index.crates.io",
 ];
@@ -72,13 +75,13 @@ impl RemoteSessionContext {
     #[must_use]
     pub fn from_env_map(env_map: &BTreeMap<String, String>) -> Self {
         Self {
-            enabled: env_truthy(env_map.get("CLAW_CODE_REMOTE")),
+            enabled: env_truthy(env_map.get("CLUES_CODE_REMOTE")),
             session_id: env_map
-                .get("CLAW_CODE_REMOTE_SESSION_ID")
+                .get("CLUES_CODE_REMOTE_SESSION_ID")
                 .filter(|value| !value.is_empty())
                 .cloned(),
             base_url: env_map
-                .get("ANTHROPIC_BASE_URL")
+                .get("CLUES_REMOTE_BASE_URL")
                 .filter(|value| !value.is_empty())
                 .cloned()
                 .unwrap_or_else(|| DEFAULT_REMOTE_BASE_URL.to_string()),
@@ -272,13 +275,13 @@ mod tests {
     #[test]
     fn remote_context_reads_env_state() {
         let env = BTreeMap::from([
-            ("CLAW_CODE_REMOTE".to_string(), "true".to_string()),
+            ("CLUES_CODE_REMOTE".to_string(), "true".to_string()),
             (
-                "CLAW_CODE_REMOTE_SESSION_ID".to_string(),
+                "CLUES_CODE_REMOTE_SESSION_ID".to_string(),
                 "session-123".to_string(),
             ),
             (
-                "ANTHROPIC_BASE_URL".to_string(),
+                "CLUES_REMOTE_BASE_URL".to_string(),
                 "https://remote.test".to_string(),
             ),
         ]);
@@ -291,7 +294,7 @@ mod tests {
     #[test]
     fn bootstrap_fails_open_when_token_or_session_is_missing() {
         let env = BTreeMap::from([
-            ("CLAW_CODE_REMOTE".to_string(), "1".to_string()),
+            ("CLUES_CODE_REMOTE".to_string(), "1".to_string()),
             ("CCR_UPSTREAM_PROXY_ENABLED".to_string(), "true".to_string()),
         ]);
         let bootstrap = UpstreamProxyBootstrap::from_env_map(&env);
@@ -307,14 +310,14 @@ mod tests {
         fs::write(&token_path, "secret-token\n").expect("write token");
 
         let env = BTreeMap::from([
-            ("CLAW_CODE_REMOTE".to_string(), "1".to_string()),
+            ("CLUES_CODE_REMOTE".to_string(), "1".to_string()),
             ("CCR_UPSTREAM_PROXY_ENABLED".to_string(), "true".to_string()),
             (
-                "CLAW_CODE_REMOTE_SESSION_ID".to_string(),
+                "CLUES_CODE_REMOTE_SESSION_ID".to_string(),
                 "session-123".to_string(),
             ),
             (
-                "ANTHROPIC_BASE_URL".to_string(),
+                "CLUES_REMOTE_BASE_URL".to_string(),
                 "https://remote.test".to_string(),
             ),
             (
@@ -395,7 +398,7 @@ mod tests {
             upstream_proxy_ws_url("http://localhost:3000/"),
             "ws://localhost:3000/v1/code/upstreamproxy/ws"
         );
-        assert!(no_proxy_list().contains("anthropic.com"));
+        assert!(no_proxy_list().contains("openrouter.ai"));
         assert!(no_proxy_list().contains("github.com"));
     }
 }

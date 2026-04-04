@@ -4,7 +4,7 @@
   "module_count": 11,
   "sample_files": [
     "types/command.ts",
-    "types/generated/events_mono/claw_code/v1/claw_code_internal_event.ts",
+    "types/generated/events_mono/clues_code/v1/clues_code_internal_event.ts",
     "types/generated/events_mono/common/v1/auth.ts",
     "types/generated/events_mono/growthbook/v1/growthbook_experiment_event.ts",
     "types/generated/google/protobuf/timestamp.ts",

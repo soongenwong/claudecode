@@ -1,6 +1,6 @@
 use crate::config::{McpServerConfig, ScopedMcpServerConfig};
 
-const CLAUDEAI_SERVER_PREFIX: &str = "claude.ai ";
+const CLUES_SERVER_PREFIX: &str = "clues.code ";
 const CCR_PROXY_PATH_MARKERS: [&str; 2] = ["/v2/session_ingress/shttp/mcp/", "/v2/ccr-sessions/"];
 
 #[must_use]
@@ -13,7 +13,7 @@ pub fn normalize_name_for_mcp(name: &str) -> String {
         })
         .collect::<String>();
 
-    if name.starts_with(CLAUDEAI_SERVER_PREFIX) {
+    if name.starts_with(CLUES_SERVER_PREFIX) {
         normalized = collapse_underscores(&normalized)
             .trim_matches('_')
             .to_string();
@@ -111,7 +111,7 @@ pub fn scoped_mcp_config_hash(config: &ScopedMcpServerConfig) -> String {
         ),
         McpServerConfig::Sdk(sdk) => format!("sdk|{}", sdk.name),
         McpServerConfig::ManagedProxy(proxy) => {
-            format!("claudeai-proxy|{}|{}", proxy.url, proxy.id)
+            format!("clues-proxy|{}|{}", proxy.url, proxy.id)
         }
     };
     stable_hex_hash(&rendered)
@@ -220,18 +220,18 @@ mod tests {
         assert_eq!(normalize_name_for_mcp("github.com"), "github_com");
         assert_eq!(normalize_name_for_mcp("tool name!"), "tool_name_");
         assert_eq!(
-            normalize_name_for_mcp("claude.ai Example   Server!!"),
-            "claude_ai_Example_Server"
+            normalize_name_for_mcp("clues.code Example   Server!!"),
+            "clues_code_Example_Server"
         );
         assert_eq!(
-            mcp_tool_name("claude.ai Example Server", "weather tool"),
-            "mcp__claude_ai_Example_Server__weather_tool"
+            mcp_tool_name("clues.code Example Server", "weather tool"),
+            "mcp__clues_code_Example_Server__weather_tool"
         );
     }
 
     #[test]
     fn unwraps_ccr_proxy_urls_for_signature_matching() {
-        let wrapped = "https://api.anthropic.com/v2/session_ingress/shttp/mcp/123?mcp_url=https%3A%2F%2Fvendor.example%2Fmcp&other=1";
+        let wrapped = "https://proxy.example/v2/session_ingress/shttp/mcp/123?mcp_url=https%3A%2F%2Fvendor.example%2Fmcp&other=1";
         assert_eq!(unwrap_ccr_proxy_url(wrapped), "https://vendor.example/mcp");
         assert_eq!(
             unwrap_ccr_proxy_url("https://vendor.example/mcp"),
@@ -252,7 +252,7 @@ mod tests {
         );
 
         let remote = McpServerConfig::Ws(McpWebSocketServerConfig {
-            url: "https://api.anthropic.com/v2/ccr-sessions/1?mcp_url=wss%3A%2F%2Fvendor.example%2Fmcp".to_string(),
+            url: "https://proxy.example/v2/ccr-sessions/1?mcp_url=wss%3A%2F%2Fvendor.example%2Fmcp".to_string(),
             headers: BTreeMap::new(),
             headers_helper: None,
         });

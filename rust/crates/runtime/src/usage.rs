@@ -1,10 +1,10 @@
 use crate::session::Session;
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_INPUT_COST_PER_MILLION: f64 = 15.0;
-const DEFAULT_OUTPUT_COST_PER_MILLION: f64 = 75.0;
-const DEFAULT_CACHE_CREATION_COST_PER_MILLION: f64 = 18.75;
-const DEFAULT_CACHE_READ_COST_PER_MILLION: f64 = 1.5;
+const DEFAULT_INPUT_COST_PER_MILLION: f64 = 0.0;
+const DEFAULT_OUTPUT_COST_PER_MILLION: f64 = 0.0;
+const DEFAULT_CACHE_CREATION_COST_PER_MILLION: f64 = 0.0;
+const DEFAULT_CACHE_READ_COST_PER_MILLION: f64 = 0.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelPricing {
@@ -16,7 +16,7 @@ pub struct ModelPricing {
 
 impl ModelPricing {
     #[must_use]
-    pub const fn default_sonnet_tier() -> Self {
+    pub const fn default_free_tier() -> Self {
         Self {
             input_cost_per_million: DEFAULT_INPUT_COST_PER_MILLION,
             output_cost_per_million: DEFAULT_OUTPUT_COST_PER_MILLION,
@@ -54,27 +54,7 @@ impl UsageCostEstimate {
 
 #[must_use]
 pub fn pricing_for_model(model: &str) -> Option<ModelPricing> {
-    let normalized = model.to_ascii_lowercase();
-    if normalized.contains("haiku") {
-        return Some(ModelPricing {
-            input_cost_per_million: 1.0,
-            output_cost_per_million: 5.0,
-            cache_creation_cost_per_million: 1.25,
-            cache_read_cost_per_million: 0.1,
-        });
-    }
-    if normalized.contains("opus") {
-        return Some(ModelPricing {
-            input_cost_per_million: 15.0,
-            output_cost_per_million: 75.0,
-            cache_creation_cost_per_million: 18.75,
-            cache_read_cost_per_million: 1.5,
-        });
-    }
-    if normalized.contains("sonnet") {
-        return Some(ModelPricing::default_sonnet_tier());
-    }
-    None
+    (!model.trim().is_empty()).then_some(ModelPricing::default_free_tier())
 }
 
 impl TokenUsage {
@@ -88,7 +68,7 @@ impl TokenUsage {
 
     #[must_use]
     pub fn estimate_cost_usd(self) -> UsageCostEstimate {
-        self.estimate_cost_usd_with_pricing(ModelPricing::default_sonnet_tier())
+        self.estimate_cost_usd_with_pricing(ModelPricing::default_free_tier())
     }
 
     #[must_use]
@@ -119,18 +99,10 @@ impl TokenUsage {
             || self.estimate_cost_usd(),
             |pricing| self.estimate_cost_usd_with_pricing(pricing),
         );
-        let model_suffix =
-            model.map_or_else(String::new, |model_name| format!(" model={model_name}"));
-        let pricing_suffix = if pricing.is_some() {
-            ""
-        } else if model.is_some() {
-            " pricing=estimated-default"
-        } else {
-            ""
-        };
+        let model_suffix = model.map_or_else(String::new, |model_name| format!(" model={model_name}"));
         vec![
             format!(
-                "{label}: total_tokens={} input={} output={} cache_write={} cache_read={} estimated_cost={}{}{}",
+                "{label}: total_tokens={} input={} output={} cache_write={} cache_read={} estimated_cost={}{}",
                 self.total_tokens(),
                 self.input_tokens,
                 self.output_tokens,
@@ -138,7 +110,6 @@ impl TokenUsage {
                 self.cache_read_input_tokens,
                 format_usd(cost.total_cost_usd()),
                 model_suffix,
-                pricing_suffix,
             ),
             format!(
                 "  cost breakdown: input={} output={} cache_write={} cache_read={}",
@@ -248,16 +219,16 @@ mod tests {
         };
 
         let cost = usage.estimate_cost_usd();
-        assert_eq!(format_usd(cost.input_cost_usd), "$15.0000");
-        assert_eq!(format_usd(cost.output_cost_usd), "$37.5000");
-        let lines = usage.summary_lines_for_model("usage", Some("claude-sonnet-4-6"));
-        assert!(lines[0].contains("estimated_cost=$54.6750"));
-        assert!(lines[0].contains("model=claude-sonnet-4-6"));
-        assert!(lines[1].contains("cache_read=$0.3000"));
+        assert_eq!(format_usd(cost.input_cost_usd), "$0.0000");
+        assert_eq!(format_usd(cost.output_cost_usd), "$0.0000");
+        let lines = usage.summary_lines_for_model("usage", Some("Qwen/Qwen3-Coder-Next:fastest"));
+        assert!(lines[0].contains("estimated_cost=$0.0000"));
+        assert!(lines[0].contains("model=Qwen/Qwen3-Coder-Next:fastest"));
+        assert!(lines[1].contains("cache_read=$0.0000"));
     }
 
     #[test]
-    fn supports_model_specific_pricing() {
+    fn supports_free_model_pricing_defaults() {
         let usage = TokenUsage {
             input_tokens: 1_000_000,
             output_tokens: 500_000,
@@ -265,16 +236,16 @@ mod tests {
             cache_read_input_tokens: 0,
         };
 
-        let haiku = pricing_for_model("claude-haiku-4-5-20251213").expect("haiku pricing");
-        let opus = pricing_for_model("claude-opus-4-6").expect("opus pricing");
-        let haiku_cost = usage.estimate_cost_usd_with_pricing(haiku);
-        let opus_cost = usage.estimate_cost_usd_with_pricing(opus);
-        assert_eq!(format_usd(haiku_cost.total_cost_usd()), "$3.5000");
-        assert_eq!(format_usd(opus_cost.total_cost_usd()), "$52.5000");
+        let coder = pricing_for_model("Qwen/Qwen3-Coder-Next:fastest").expect("coder pricing");
+        let github = pricing_for_model("openai/gpt-4.1-mini").expect("github pricing");
+        let coder_cost = usage.estimate_cost_usd_with_pricing(coder);
+        let github_cost = usage.estimate_cost_usd_with_pricing(github);
+        assert_eq!(format_usd(coder_cost.total_cost_usd()), "$0.0000");
+        assert_eq!(format_usd(github_cost.total_cost_usd()), "$0.0000");
     }
 
     #[test]
-    fn marks_unknown_model_pricing_as_fallback() {
+    fn treats_unknown_models_as_free_default_pricing() {
         let usage = TokenUsage {
             input_tokens: 100,
             output_tokens: 100,
@@ -282,7 +253,9 @@ mod tests {
             cache_read_input_tokens: 0,
         };
         let lines = usage.summary_lines_for_model("usage", Some("custom-model"));
-        assert!(lines[0].contains("pricing=estimated-default"));
+        assert!(lines[0].contains("model=custom-model"));
+        assert!(lines[0].contains("estimated_cost=$0.0000"));
+        assert!(!lines[0].contains("pricing=estimated-default"));
     }
 
     #[test]

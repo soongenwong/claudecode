@@ -21,7 +21,7 @@ def build_port_context(base: Path | None = None) -> PortContext:
     source_root = root / 'src'
     tests_root = root / 'tests'
     assets_root = root / 'assets'
-    archive_root = root / 'archive' / 'claw_code_ts_snapshot' / 'src'
+    archive_root = root / 'archive' / 'clues_code_ts_snapshot' / 'src'
     return PortContext(
         source_root=source_root,
         tests_root=tests_root,

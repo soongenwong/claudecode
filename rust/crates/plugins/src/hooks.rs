@@ -1,5 +1,4 @@
 use std::ffi::OsStr;
-use std::path::Path;
 use std::process::Command;
 
 use serde_json::json;
@@ -229,25 +228,7 @@ fn format_hook_warning(command: &str, code: i32, stdout: Option<&str>, stderr: &
 }
 
 fn shell_command(command: &str) -> CommandWithStdin {
-    #[cfg(windows)]
-    let command_builder = {
-        let mut command_builder = Command::new("cmd");
-        command_builder.arg("/C").arg(command);
-        CommandWithStdin::new(command_builder)
-    };
-
-    #[cfg(not(windows))]
-    let command_builder = if Path::new(command).exists() {
-        let mut command_builder = Command::new("sh");
-        command_builder.arg(command);
-        CommandWithStdin::new(command_builder)
-    } else {
-        let mut command_builder = Command::new("sh");
-        command_builder.arg("-lc").arg(command);
-        CommandWithStdin::new(command_builder)
-    };
-
-    command_builder
+    CommandWithStdin::new(crate::build_plugin_command_process(command, &[]))
 }
 
 struct CommandWithStdin {
@@ -309,23 +290,56 @@ mod tests {
         std::env::temp_dir().join(format!("plugins-hook-runner-{label}-{nanos}"))
     }
 
+    fn script_extension() -> &'static str {
+        #[cfg(windows)]
+        {
+            "cmd"
+        }
+        #[cfg(not(windows))]
+        {
+            "sh"
+        }
+    }
+
+    fn write_script(root: &Path, base: &str, unix_contents: &str, windows_contents: &str) {
+        let path = root.join(format!("{base}.{}", script_extension()));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("parent dir");
+        }
+        let contents = if cfg!(windows) {
+            windows_contents
+        } else {
+            unix_contents
+        };
+        fs::write(&path, contents).expect("write script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(&path).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).expect("chmod");
+        }
+    }
+
     fn write_hook_plugin(root: &Path, name: &str, pre_message: &str, post_message: &str) {
-        fs::create_dir_all(root.join(".claw-plugin")).expect("manifest dir");
-        fs::create_dir_all(root.join("hooks")).expect("hooks dir");
+        fs::create_dir_all(root.join(".clues-plugin")).expect("manifest dir");
+        write_script(
+            root,
+            "hooks/pre",
+            format!("#!/bin/sh\nprintf '%s\\n' '{pre_message}'\n").as_str(),
+            format!("@echo off\r\necho {pre_message}\r\n").as_str(),
+        );
+        write_script(
+            root,
+            "hooks/post",
+            format!("#!/bin/sh\nprintf '%s\\n' '{post_message}'\n").as_str(),
+            format!("@echo off\r\necho {post_message}\r\n").as_str(),
+        );
         fs::write(
-            root.join("hooks").join("pre.sh"),
-            format!("#!/bin/sh\nprintf '%s\\n' '{pre_message}'\n"),
-        )
-        .expect("write pre hook");
-        fs::write(
-            root.join("hooks").join("post.sh"),
-            format!("#!/bin/sh\nprintf '%s\\n' '{post_message}'\n"),
-        )
-        .expect("write post hook");
-        fs::write(
-            root.join(".claw-plugin").join("plugin.json"),
+            root.join(".clues-plugin").join("plugin.json"),
             format!(
-                "{{\n  \"name\": \"{name}\",\n  \"version\": \"1.0.0\",\n  \"description\": \"hook plugin\",\n  \"hooks\": {{\n    \"PreToolUse\": [\"./hooks/pre.sh\"],\n    \"PostToolUse\": [\"./hooks/post.sh\"]\n  }}\n}}"
+                "{{\n  \"name\": \"{name}\",\n  \"version\": \"1.0.0\",\n  \"description\": \"hook plugin\",\n  \"hooks\": {{\n    \"PreToolUse\": [\"./hooks/pre\"],\n    \"PostToolUse\": [\"./hooks/post\"]\n  }}\n}}"
             ),
         )
         .expect("write plugin manifest");
@@ -383,7 +397,11 @@ mod tests {
     #[test]
     fn pre_tool_use_denies_when_plugin_hook_exits_two() {
         let runner = HookRunner::new(crate::PluginHooks {
-            pre_tool_use: vec!["printf 'blocked by plugin'; exit 2".to_string()],
+            pre_tool_use: vec![if cfg!(windows) {
+                "echo blocked by plugin & exit 2".to_string()
+            } else {
+                "printf 'blocked by plugin'; exit 2".to_string()
+            }],
             post_tool_use: Vec::new(),
         });
 

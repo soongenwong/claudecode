@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Clone, Parser, PartialEq, Eq)]
-#[command(name = "claw-cli", version, about = "Claw Code CLI")]
+#[command(name = "clues-cli", version, about = "Clues Code CLI")]
 pub struct Cli {
-    #[arg(long, default_value = "claude-opus-4-6")]
+    #[arg(long, default_value = "opus")]
     pub model: String,
 
     #[arg(long, value_enum, default_value_t = PermissionMode::DangerFullAccess)]
@@ -58,7 +58,7 @@ mod tests {
     #[test]
     fn parses_requested_flags() {
         let cli = Cli::parse_from([
-            "claw-cli",
+            "clues-cli",
             "--model",
             "claude-haiku-4-5-20251213",
             "--permission-mode",
@@ -89,16 +89,16 @@ mod tests {
 
     #[test]
     fn parses_login_and_logout_commands() {
-        let login = Cli::parse_from(["claw-cli", "login"]);
+        let login = Cli::parse_from(["clues-cli", "login"]);
         assert_eq!(login.command, Some(Command::Login));
 
-        let logout = Cli::parse_from(["claw-cli", "logout"]);
+        let logout = Cli::parse_from(["clues-cli", "logout"]);
         assert_eq!(logout.command, Some(Command::Logout));
     }
 
     #[test]
     fn defaults_to_danger_full_access_permission_mode() {
-        let cli = Cli::parse_from(["claw-cli"]);
+        let cli = Cli::parse_from(["clues-cli"]);
         assert_eq!(cli.permission_mode, PermissionMode::DangerFullAccess);
     }
 }
