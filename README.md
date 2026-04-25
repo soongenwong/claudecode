@@ -33,7 +33,7 @@ ClaudeCode is a terminal-native CLI agent designed to bring advanced LLM capabil
 
 ## Feature Parity Status
 
-This is an MVP implementation. The Rust CLI has feature parity with the TypeScript implementation, but with the following known gaps:
+This is an MVP implementation. The Rust CLI aims for feature parity with the TypeScript implementation, but currently has the following known gaps:
 
 | Feature | Status | Notes |
 |---------|--------|-------|
