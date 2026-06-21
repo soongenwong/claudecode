@@ -25,6 +25,7 @@ ClaudeCode is a terminal-native CLI agent designed to bring advanced LLM capabil
 ## Key Features
 
 - **Rust-powered:** Built with Rust for memory safety, minimal binary size, and high execution speed.
+- **Live TUI dashboard:** A split-pane [`ratatui`](https://ratatui.rs) interface showing the agent's pipeline, a workspace tree that recolors as files are scanned/read/modified, and a syntax-highlighted diff that streams in character-by-character.
 - **Agentic CLI:** Interactive shell and one-shot prompt support for seamless terminal workflows.
 - **Model flexible:** Supports Anthropic-compatible and OpenAI-compatible providers, plus xAI/Grok aliases.
 - **Workspace aware:** Context-aware tools designed to understand your local codebase.
@@ -69,6 +70,14 @@ Resume a previous session:
 ```bash
 claw --resume session.json /status
 ```
+
+Launch the live split-pane dashboard (currently runs a scripted demo session):
+
+```bash
+claw dashboard   # alias: claw tui
+```
+
+The dashboard renders three panels — **Agent Pipeline** (left, a live step log), **Workspace** + **System State** (right, a file tree that recolors as files are scanned/read/modified, plus a progress gauge), and **Live Diff** (bottom, a syntax-highlighted diff that types in line-by-line). Press `q`, `Esc`, or `Ctrl-C` to exit. The UI is driven entirely by an `AgentEvent` stream, so it can be wired to the real agent loop without touching the rendering code.
 
 Run `claw --help` for the full command list, including agents, skills, and system-prompt flows.
 

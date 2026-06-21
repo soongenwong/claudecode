@@ -15,6 +15,7 @@ commands = { path = "../commands" }
 compat-harness = { path = "../compat-harness" }
 crossterm = "0.28"
 pulldown-cmark = "0.13"
+ratatui = "0.29"
 rustyline = "15"
 runtime = { path = "../runtime" }
 plugins = { path = "../plugins" }

@@ -1,3 +1,4 @@
+mod dashboard;
 mod init;
 mod input;
 mod render;
@@ -100,6 +101,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             permission_mode,
         } => LiveCli::new(model, true, allowed_tools, permission_mode)?
             .run_turn_with_output(&prompt, output_format)?,
+        CliAction::Dashboard => dashboard::run_demo()?,
         CliAction::Login => run_login()?,
         CliAction::Logout => run_logout()?,
         CliAction::Init => run_init()?,
@@ -142,6 +144,8 @@ enum CliAction {
     Login,
     Logout,
     Init,
+    /// Launch the live split-pane TUI dashboard (demo agent session).
+    Dashboard,
     Repl {
         model: String,
         allowed_tools: Option<AllowedToolSet>,
@@ -296,6 +300,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "login" => Ok(CliAction::Login),
         "logout" => Ok(CliAction::Logout),
         "init" => Ok(CliAction::Init),
+        "dashboard" | "tui" => Ok(CliAction::Dashboard),
         "prompt" => {
             let prompt = rest[1..].join(" ");
             if prompt.trim().is_empty() {
@@ -4012,6 +4017,10 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(out)?;
     writeln!(out, "Commands")?;
+    writeln!(
+        out,
+        "  claw dashboard                        Launch the live split-pane TUI dashboard"
+    )?;
     writeln!(
         out,
         "  claw dump-manifests                   Read upstream TS sources and print extracted counts"
