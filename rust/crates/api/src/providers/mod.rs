@@ -28,6 +28,7 @@ pub enum ProviderKind {
     ClawApi,
     Xai,
     OpenAi,
+    MiniMax,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +139,24 @@ const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
             default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
         },
     ),
+    (
+        "minimax-m2.7",
+        ProviderMetadata {
+            provider: ProviderKind::MiniMax,
+            auth_env: "MINIMAX_API_KEY",
+            base_url_env: "MINIMAX_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_MINIMAX_BASE_URL,
+        },
+    ),
+    (
+        "minimax-m2.7-highspeed",
+        ProviderMetadata {
+            provider: ProviderKind::MiniMax,
+            auth_env: "MINIMAX_API_KEY",
+            base_url_env: "MINIMAX_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_MINIMAX_BASE_URL,
+        },
+    ),
 ];
 
 #[must_use]
@@ -161,6 +180,7 @@ pub fn resolve_model_alias(model: &str) -> String {
                     _ => trimmed,
                 },
                 ProviderKind::OpenAi => trimmed,
+                ProviderKind::MiniMax => trimmed,
             })
         })
         .map_or_else(|| trimmed.to_string(), ToOwned::to_owned)
@@ -181,6 +201,14 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
             default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
         });
     }
+    if lower.starts_with("minimax") {
+        return Some(ProviderMetadata {
+            provider: ProviderKind::MiniMax,
+            auth_env: "MINIMAX_API_KEY",
+            base_url_env: "MINIMAX_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_MINIMAX_BASE_URL,
+        });
+    }
     None
 }
 
@@ -197,6 +225,9 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
     }
     if openai_compat::has_api_key("XAI_API_KEY") {
         return ProviderKind::Xai;
+    }
+    if openai_compat::has_api_key("MINIMAX_API_KEY") {
+        return ProviderKind::MiniMax;
     }
     ProviderKind::ClawApi
 }
@@ -235,5 +266,23 @@ mod tests {
     fn keeps_existing_max_token_heuristic() {
         assert_eq!(max_tokens_for_model("opus"), 32_000);
         assert_eq!(max_tokens_for_model("grok-3"), 64_000);
+    }
+
+    #[test]
+    fn resolves_minimax_models() {
+        assert_eq!(resolve_model_alias("MiniMax-M2.7"), "MiniMax-M2.7");
+        assert_eq!(
+            resolve_model_alias("MiniMax-M2.7-highspeed"),
+            "MiniMax-M2.7-highspeed"
+        );
+    }
+
+    #[test]
+    fn detects_minimax_provider_from_model_name() {
+        assert_eq!(detect_provider_kind("MiniMax-M2.7"), ProviderKind::MiniMax);
+        assert_eq!(
+            detect_provider_kind("MiniMax-M2.7-highspeed"),
+            ProviderKind::MiniMax
+        );
     }
 }

@@ -23,6 +23,7 @@ pub enum ProviderClient {
     ClawApi(ClawApiClient),
     Xai(OpenAiCompatClient),
     OpenAi(OpenAiCompatClient),
+    MiniMax(OpenAiCompatClient),
 }
 
 impl ProviderClient {
@@ -46,6 +47,9 @@ impl ProviderClient {
             ProviderKind::OpenAi => Ok(Self::OpenAi(OpenAiCompatClient::from_env(
                 OpenAiCompatConfig::openai(),
             )?)),
+            ProviderKind::MiniMax => Ok(Self::MiniMax(OpenAiCompatClient::from_env(
+                OpenAiCompatConfig::minimax(),
+            )?)),
         }
     }
 
@@ -55,6 +59,7 @@ impl ProviderClient {
             Self::ClawApi(_) => ProviderKind::ClawApi,
             Self::Xai(_) => ProviderKind::Xai,
             Self::OpenAi(_) => ProviderKind::OpenAi,
+            Self::MiniMax(_) => ProviderKind::MiniMax,
         }
     }
 
@@ -64,7 +69,9 @@ impl ProviderClient {
     ) -> Result<MessageResponse, ApiError> {
         match self {
             Self::ClawApi(client) => send_via_provider(client, request).await,
-            Self::Xai(client) | Self::OpenAi(client) => send_via_provider(client, request).await,
+            Self::Xai(client) | Self::OpenAi(client) | Self::MiniMax(client) => {
+                send_via_provider(client, request).await
+            }
         }
     }
 
@@ -76,9 +83,11 @@ impl ProviderClient {
             Self::ClawApi(client) => stream_via_provider(client, request)
                 .await
                 .map(MessageStream::ClawApi),
-            Self::Xai(client) | Self::OpenAi(client) => stream_via_provider(client, request)
-                .await
-                .map(MessageStream::OpenAiCompat),
+            Self::Xai(client) | Self::OpenAi(client) | Self::MiniMax(client) => {
+                stream_via_provider(client, request)
+                    .await
+                    .map(MessageStream::OpenAiCompat)
+            }
         }
     }
 }
@@ -119,6 +128,11 @@ pub fn read_xai_base_url() -> String {
     openai_compat::read_base_url(OpenAiCompatConfig::xai())
 }
 
+#[must_use]
+pub fn read_minimax_base_url() -> String {
+    openai_compat::read_base_url(OpenAiCompatConfig::minimax())
+}
+
 #[cfg(test)]
 mod tests {
     use crate::providers::{detect_provider_kind, resolve_model_alias, ProviderKind};
@@ -137,5 +151,6 @@ mod tests {
             detect_provider_kind("claude-sonnet-4-6"),
             ProviderKind::ClawApi
         );
+        assert_eq!(detect_provider_kind("MiniMax-M2.7"), ProviderKind::MiniMax);
     }
 }
