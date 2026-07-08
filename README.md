@@ -31,6 +31,23 @@ ClaudeCode is a terminal-native CLI agent designed to bring advanced LLM capabil
 - **Session persistence:** Resumeable sessions via JSON state management.
 - **Extensible:** Plugin-ready architecture for custom tools and skills.
 
+## Feature Parity Status
+
+This is an MVP implementation. The Rust CLI aims for feature parity with the TypeScript implementation, but currently has the following known gaps:
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Tools** | ✅ Partial | Core tool registry implemented; MCP tools, remote triggers, and team tools planned |
+| **Hooks** | ⚠️ Config only | Parsed from configuration but not executed in runtime (pre/post tool hooks planned) |
+| **Plugins** | ❌ Missing | Plugin system architecture designed but not yet implemented |
+| **Skills** | ⚠️ Limited | Local file-based skills supported; registry-based discovery planned |
+| **MCP Integration** | ✅ Partial | Core MCP client implemented; full workspace diagnostics planned |
+| **LSP Integration** | ⚠️ Partial | Basic LSP support; diagnostics integration in progress |
+
+**Current Status:** MVP feature set suitable for basic coding assistance. Advanced customization features (plugins, hooks) are planned for future releases.
+
+For detailed feature gaps, see [PARITY.md](./PARITY.md).
+
 ## Getting Started
 
 ### Prerequisites
