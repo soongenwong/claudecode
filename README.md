@@ -8,11 +8,11 @@ ClaudeCode is a terminal-native CLI agent designed to bring advanced LLM capabil
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=soongenwong%2Fclaudecode&type=date&legend=bottom-right">
+<a href="https://star-history.dera.page/#soongenwong/claudecode&type=date&legend=bottom-right">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=soongenwong/claudecode&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=soongenwong/claudecode&type=date&legend=top-left" />
-   <img alt="ClaudeCode Star History" src="https://api.star-history.com/chart?repos=soongenwong/claudecode&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=soongenwong/claudecode&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=soongenwong/claudecode&type=date&legend=top-left" />
+   <img alt="ClaudeCode Star History" src="https://star-history.dera.page/svg?repos=soongenwong/claudecode&type=date&legend=top-left" />
  </picture>
 </a>
 
